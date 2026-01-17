@@ -6,10 +6,13 @@ SIFT-Video is a multimodal semantic video search engine that enables natural-lan
 
 The system processes videos offline, converts audio and visual information into semantic embeddings using pre-trained inference models, and indexes them in a vector database for similarity search at query time.
 
-### Project Status
+### Installation
 
-Work in Progress (WIP)
-Architecture and technology choices are finalized. Implementation is ongoing.
+>WIP
+
+### Usage
+
+>WIP
 
 ### Planned Features
 
@@ -40,10 +43,12 @@ Architecture and technology choices are finalized. Implementation is ongoing.
 - Vector database (probably Qdrant)
 - Docker
 
-### Contributing
+---
+
+## Contributing
 
 Suggestions, fixes and improvments are welcome. Feel free to open an issue or a PR.
 
-### License
+## License
 
 This project is licensed under [GNU GPLv3](LICENSE)
