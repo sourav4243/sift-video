@@ -1,0 +1,10 @@
+{
+    "id": "string",
+    "vector": [0.0],
+    "metadata": {
+        "video_id": "string",
+        "start_time": 0.0,
+        "end_time": 0.0,
+        "modality": "audio/visual"
+    }
+}
