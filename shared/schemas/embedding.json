@@ -1,10 +1,12 @@
 {
-    "id": "string",
-    "vector": [0.0],
-    "metadata": {
-        "video_id": "string",
-        "start_time": 0.0,
-        "end_time": 0.0,
-        "modality": "audio/visual"
-    }
+  "id": "uuid",
+  "vector": [0.12],
+  "metadata": {
+    "video_id": "string",
+    "video_name": "string",
+    "start_time": 0.0,
+    "end_time": 0.0,
+    "modality": "audio",
+    "text_content": "I am Iron Man"
+  }
 }
