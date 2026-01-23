@@ -66,3 +66,7 @@ This confirms:
 * Docker image built correctly
 * Volumes mounted correctly
 * Video files are visible inside the container
+
+## Dependencies
+This service uses `whisper.cpp` as a git submodule for speech-to-text.
+The submodule must be initialized before building the Docker image.
