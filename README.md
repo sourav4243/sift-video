@@ -10,6 +10,23 @@ The system processes videos offline, converts audio and visual information into 
 
 >WIP
 
+### Submodules
+
+This repository uses git submodules for external dependencies.
+
+In particular, the ingestion service depends on `whisper.cpp` for speech-to-text.
+
+After cloning the repository, initialize submodules using:
+
+```bash
+git submodule update --init --recursive
+```
+
+Or clone the repository with submodules included:
+```bash 
+git clone --recurse-submodules https://github.com/sourav4243/sift-video.git
+```
+
 ### Usage
 
 >WIP
