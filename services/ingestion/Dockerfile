@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y \
     g++ \
     cmake \
     make \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
