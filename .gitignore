@@ -1,3 +1,4 @@
 videos/
 output/
 services/query_engine/target
+services/ingestion/external/whisper/models/*.bin
