@@ -1,36 +1,78 @@
 # Ingestion Service
 
-This service is responsible for **offline preprocessing of raw video files**.
+The Ingestion Service is responsible for **offline preprocessing of raw video files**
+and converting them into **structured, timestamped transcripts**.
 
-Its job is to:
-- discover video files
-- prepare them for downstream indexing
-- act as the **entry point of the pipeline**
+It acts as the **entry point of the multimedia search pipeline**.
 
-At this stage, the service only verifies video discovery inside a containerized environment.
+---
+
+## What this service does
+
+For each video placed in the `/videos` directory, the service performs:
+
+1. **Video - Audio extraction**
+   - Uses FFmpeg to extract mono 16kHz WAV audio
+
+2. **Audio - Text transcription**
+   - Uses `whisper.cpp` (offline, no Python)
+   - Generates `.srt`, `.txt`, and `.vtt` files
+
+3. **Transcript normalization**
+   - Parses Whisper-generated `.srt`
+   - Produces a unified `transcripts.json` file
+
+All steps run **inside a Docker container**.
 
 ---
 
 ## Responsibilities
 
-- Scan the `/videos` directory for input files
-- Run inside a Docker container
-- Ensure correct volume mounting and filesystem access
-- Log discovered video filenames
+- Scan `/videos` for input video files
+- Extract audio using FFmpeg
+- Transcribe speech using Whisper (C++ implementation)
+- Generate structured transcript metadata
+- Write outputs to `/output`
 
-This service **does not perform search, embeddings, or ML inference**.
-It only handles **raw video ingestion**.
+This service does **not** perform:
+- embeddings
+- vector indexing
+- search or retrieval
 
 ---
 
 ## Directory Contract
 
-The container expects the following volumes:
+The container expects the following mounted volumes:
 
-- `/videos` — input directory containing raw video files
-- `/output` — directory reserved for generated artifacts (used in later stages)
+- `/videos` - input directory containing raw video files
+- `/output` - directory for generated artifacts
 
 These paths are **hard contracts** and must not be changed.
+
+---
+
+## Output Artifacts
+
+For each input video:
+
+- `<video>.wav` - extracted audio
+- `<video>.srt` - timestamped subtitles
+- `<video>.txt` - plain text transcript
+- `<video>.vtt` - WebVTT transcript
+
+Additionally:
+
+- `transcripts.json` - aggregated, schema-compliant transcript metadata
+
+---
+
+## Dependencies
+
+- FFmpeg
+- `whisper.cpp` (added as a git submodule)
+
+Whisper models are downloaded at runtime and **must not be committed**.
 
 ---
 
@@ -40,7 +82,9 @@ From repository root:
 
 ```bash
 docker build -t ingestion services/ingestion
+
 ```
+> If you encounter build issues due to cached layers, rebuild with `--no-cache`.
 
 ---
 
@@ -55,18 +99,3 @@ docker run --rm \
 ```
 
 ---
-
-## Expected Output:
-Example log:
-```text
-Ingestion service started
-Found files: example.mp4
-```
-This confirms:
-* Docker image built correctly
-* Volumes mounted correctly
-* Video files are visible inside the container
-
-## Dependencies
-This service uses `whisper.cpp` as a git submodule for speech-to-text.
-The submodule must be initialized before building the Docker image.
