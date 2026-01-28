@@ -6,41 +6,96 @@ SIFT-Video is a multimodal semantic video search engine that enables natural-lan
 
 The system processes videos offline, converts audio and visual information into semantic embeddings using pre-trained inference models, and indexes them in a vector database for similarity search at query time.
 
-### Installation
+### Quick Start
 
->WIP
+> WIP
 
-### Submodules
+Clone the repository and run the setup script:
 
-This repository uses git submodules for external dependencies.
+```bash
+git clone https://github.com/sourav4243/sift-video.git
+cd sift-video
 
-In particular, the ingestion service depends on `whisper.cpp` for speech-to-text.
+chmod +x setup.sh
+./setup.sh
+```
 
-After cloning the repository, initialize submodules using:
+### Installation (Manual Setup)
+
+**Prerequisites**
+
+- [docker](https://docs.docker.com/get-docker/) and docker-compose
+- git
+
+**1. Clone the repository and setup environment**
+
+Use `--recurse-submodules` for external dependencies (ingestion service depends on `whisper.cpp`) 
+
+```bash 
+git clone --recurse-submodules https://github.com/sourav4243/sift-video.git
+cd sift-video
+mkdir -p videos output
+```
+
+> Note: If you cloned without submodules, you can fix it by running:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-Or clone the repository with submodules included:
-```bash 
-git clone --recurse-submodules https://github.com/sourav4243/sift-video.git
-```
+#### Configuration
+
+> The following environment variables can be changed in `docker-compose.yml`
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `QDRANT_URL` | `http://localhost:6334` | URL of the Qdrant gRPC interface. Use `http://qdrant:6334` inside Docker. |
+| `RUST_LOG` | `info` | Logging level. |
+
+---
+
+> Note: You can access Qdrant web dashboard at http://localhost:6333/dashboard
 
 ### Usage
 
->WIP
+1. **Prepare your videos:**
+Place the video files you want to index into the videos/ directory at project root.
+
+2. **Start the services:**
+Run the following command to build and start the indexing pipeline and search API:
+
+```bash
+docker-compose up --build
+```
+
+This spins up three containers:
+
+- `sift_qdrant`: The vector database (Ports: 6333, 6334).
+- `sift_ingestion`: Processes videos from the `videos/` folder and saves transcripts to `output/`.
+- `sift_query_engine`: The search API (Port: 8080).
+
+3. **Search via API:**
+Once the system is running, you can search your indexed videos using HTTP API:
+
+```bash
+curl -X POST http://localhost:8080/search \
+    -H "Content-Type: application/json" \
+    -d '{"query": "what is the meaning of life"}'
+```
+
+> Note: A dedicated CLI tool for easier searching is planned.
 
 ### Planned Features
 
-- Offline video ingestion and indexing pipeline
-- Audio extraction from video files
-- Speech-to-text transcription with timestamps
-- Periodic video frame extraction
-- Text and image embedding generation
-- Multimodal semantic search (audio + visual)
-- Timestamp resolution and retrieval
-- Fully containerized services
+- [ ] Offline video ingestion and indexing pipeline
+- [ ] Audio extraction from video files
+- [ ] Speech-to-text transcription with timestamps
+- [ ] Periodic video frame extraction
+- [ ] Text and image embedding generation
+- [ ] Multimodal semantic search (audio + visual)
+- [ ] Timestamp resolution and retrieval
+- [ ] Fully containerized services
+- [ ] CLI tool for natural language search
 
 ### Technology Stack
 
@@ -57,14 +112,14 @@ git clone --recurse-submodules https://github.com/sourav4243/sift-video.git
 #### Infrastructure & Tooling
 
 - FFmpeg
-- Vector database (probably Qdrant)
+- Vector database (Qdrant)
 - Docker
 
 ---
 
 ## Contributing
 
-Suggestions, fixes and improvments are welcome. Feel free to open an issue or a PR.
+Suggestions, fixes and improvements are welcome. Feel free to open an issue or a PR.
 
 ## License
 
