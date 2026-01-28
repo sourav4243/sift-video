@@ -1,6 +1,8 @@
 use anyhow::Result;
 use std::sync::Arc;
 use std::collections::HashMap;
+use std::time::Duration;
+use tokio::time::sleep;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{CreateCollectionBuilder, Distance, VectorParamsBuilder, SearchPointsBuilder, Value, value::Kind};
 
@@ -20,7 +22,32 @@ pub async fn init() -> Result<Arc<AppState>> {
 
     println!("Connecting to Qdrant at {}", qdrant_url);
 
-    let client = Qdrant::from_url(&qdrant_url).build()?;
+    // retry loop
+    let mut retries = 5;
+    let client = loop {
+        match Qdrant::from_url(&qdrant_url).build() {
+            Ok(c) => {
+                match c.health_check().await {
+                    Ok(_) => {
+                        println!("Successfully connected to Qdrant!");
+                        break c;
+                    },
+                    Err(e) => {
+                        println!("Qdrant not ready yet: {}", e);
+                    }
+                }
+            },
+            Err(e) => println!("Failed to build client: {}", e),
+        }
+
+        if retries == 0 {
+            anyhow::bail!("Could not connect to Qdrant after multiple retries");
+        }
+
+        println!("Waiting for Qdrant to start... ({} retries left)", retries);
+        sleep(Duration::from_secs(3)).await;
+        retries -= 1;
+    };
 
     ensure_collection(&client, AUDIO_COLLECTION).await?;
     ensure_collection(&client, VISUAL_COLLECTION).await?;
@@ -40,7 +67,7 @@ async fn ensure_collection(client: &Qdrant, name: &str) -> Result<()> {
     Ok(())
 }
 
-pub async fn search_multimodal(client: &Qdrant, query: String) -> Result<Vec<SearchResult>> {
+pub async fn search_multimodal(client: &Qdrant, _query: String) -> Result<Vec<SearchResult>> {
     // TODO!
     // Vectorize: Run CLIP model here
     let dummy_vector = vec![0.1; VECTOR_SIZE as usize];
