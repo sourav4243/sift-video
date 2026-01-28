@@ -1,14 +1,25 @@
 use std::sync::Arc;
-use crate::models::{SearchRequest, SearchResponse};
 use axum::{Json, extract::State};
-use crate::db::AppState;
+
+use crate::models::{SearchRequest, SearchResponse};
+use crate::db::{AppState, search_multimodal};
 
 pub async fn search_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<SearchRequest>
 ) -> Json<SearchResponse> {
     
+    if payload.query.trim().is_empty() {
+        return Json(SearchResponse { results: vec![] });
+    }
+    
     println!("Received query: {}", payload.query);
 
-    todo!("Call db::search_multimodal(state, query");
+    match search_multimodal(&state.qdrant, payload.query).await {
+        Ok(results) => Json(SearchResponse { results }),
+        Err(e) => {
+            eprintln!("Search failed: {:?}", e);
+            return Json(SearchResponse { results: vec![] });
+        }
+    }
 }
