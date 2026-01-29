@@ -27,6 +27,6 @@ case "$answer" in
         ;;
     *)
         echo "Skipping container startup."
-        echo "You can run it later with: docker-compose up --build"
+        echo "You can run it later with: $COMPOSE up --build"
         ;;
 esac
