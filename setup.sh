@@ -7,7 +7,7 @@ git submodule update --init --recursive
 echo "Creating 'videos' and 'output' directories..."
 mkdir -p videos output
 
-if ! command -v docker &> /dev/null; then
+if ! command -v docker >/dev/null 2>&1; then
     echo "Warning: Docker is not installed. You'll need it to run the project."
     exit 0
 fi
