@@ -74,6 +74,7 @@ Additionally:
 
 Whisper models are downloaded at runtime and **must not be committed**.
 
+
 ---
 
 ## How to Build
@@ -85,6 +86,18 @@ docker build -t ingestion services/ingestion
 
 ```
 > If you encounter build issues due to cached layers, rebuild with `--no-cache`.
+
+---
+## Install the model once
+
+Note: run this after building the Docker image at least once.
+
+```bash
+docker run --rm \
+-v "$(pwd)/services/ingestion/external/whisper/models:/app/external/whisper/models" \
+ingestion \
+bash -c "cd external/whisper && ./models/download-ggml-model.sh small.en"
+```
 
 ---
 
