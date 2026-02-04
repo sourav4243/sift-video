@@ -26,6 +26,7 @@ chmod +x setup.sh
 
 - [docker](https://docs.docker.com/get-docker/) and docker-compose
 - git
+- curl
 
 **1. Clone the repository and setup environment**
 
@@ -41,6 +42,17 @@ mkdir -p videos output
 
 ```bash
 git submodule update --init --recursive
+```
+
+**2. Download Whisper model**
+
+Download the model for the ingestion service to work (`ggml-small.en.bin`):
+
+```bash
+mkdir -p services/ingestion/external/whisper/models
+
+curl -L -o services/ingestion/external/whisper/models/ggml-small.en.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
 ```
 
 #### Configuration
