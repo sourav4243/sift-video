@@ -59,6 +59,19 @@ int main() {
         std::string video_stem = entry.path().stem().string();      // video
         std::string video_name = entry.path().filename().string();  // video.mp4
 
+        // Video to Frames
+        fs::path frames_dir = output_dir / "frames" / video_stem;
+        fs::create_directories(frames_dir);
+
+        std::string frames_pattern = (frames_dir / "frame_%04d.jpg").string();
+
+        std::string ffmpeg_frames_cmd = "ffmpeg -y -i \"" + video_path + "\" -vf \"fps=1/2\" \"" + frames_pattern + "\"";
+
+        if(system(ffmpeg_frames_cmd.c_str())!=0){
+            std::cerr << "FFmpeg frame extraction failed for " << video_path << std::endl;
+            continue;
+        }
+
         // Video to Audio
         std::string audio_path = (output_dir / (video_stem + ".wav")).string();
         
