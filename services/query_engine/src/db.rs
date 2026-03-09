@@ -1,12 +1,9 @@
 use anyhow::Result;
-use std::sync::Arc;
-use std::collections::HashMap;
-use std::time::Duration;
+use std::{sync::Arc, collections::HashMap, time::Duration};
 use tokio::time::sleep;
-use qdrant_client::Qdrant;
-use qdrant_client::qdrant::{CreateCollectionBuilder, Distance, VectorParamsBuilder, SearchPointsBuilder, Value, value::Kind};
+use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, VectorParamsBuilder, SearchPointsBuilder, Value, value::Kind, UpsertPointsBuilder, PointStruct}};
 
-use crate::models::SearchResult;
+use crate::models::{IndexRequest, SearchResult};
 
 const VECTOR_SIZE: u64 = 512;
 const AUDIO_COLLECTION: &str = "audio_segments";
@@ -67,6 +64,39 @@ async fn ensure_collection(client: &Qdrant, name: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn upsert_embedding(client: &Qdrant, req: IndexRequest) -> Result<String> {
+    let collection = match req.metadata.modality.as_str() {
+        "audio" => AUDIO_COLLECTION,
+        "visual" => VISUAL_COLLECTION,
+        other => anyhow::bail!("Unknown modality: '{}'. Expected 'audio' or 'visual'.", other),
+    };
+
+    // build the payload
+    let mut payload: HashMap<String, Value> = HashMap::new();
+
+    payload.insert("video_id".to_string(), string_val(&req.metadata.video_id));
+    payload.insert("video_name".to_string(), string_val(&req.metadata.video_name));
+    payload.insert("start_time".to_string(), double_val(req.metadata.start_time));
+    payload.insert("end_time".to_string(), double_val(req.metadata.end_time));
+    payload.insert("modality".to_string(), string_val(&req.metadata.modality));
+
+    // text_content is audio-only but store it if present
+    if let Some(ref text) = req.metadata.text_content {
+        payload.insert("text_content".to_string(), string_val(text));
+    }
+
+    let point = PointStruct::new(req.id.clone(), req.vector, payload);
+
+    client.upsert_points(
+        UpsertPointsBuilder::new(collection, vec![point])
+    ).await?;
+
+    println!("Indexed [{}] id={} video={} t={:.2}s",
+    collection, req.id, req.metadata.video_id, req.metadata.start_time);
+
+    Ok(collection.to_string())
+}
+
 pub async fn search_multimodal(client: &Qdrant, _query: String) -> Result<Vec<SearchResult>> {
     // TODO!
     // Vectorize: Run CLIP model here
@@ -125,6 +155,15 @@ pub async fn search_multimodal(client: &Qdrant, _query: String) -> Result<Vec<Se
 }
 
 // Helpers
+
+fn string_val(s: &str) -> Value {
+    Value { kind: Some(Kind::StringValue(s.to_string())) }
+}
+
+fn double_val(n: f64) -> Value {
+    Value { kind: Some(Kind::DoubleValue(n)) }
+}
+
 fn get_str(payload: &HashMap<String, Value>, key: &str) -> String {
     match payload.get(key) {
         Some(Value { kind: Some(Kind::StringValue(s)) }) => s.clone(),

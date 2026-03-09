@@ -19,6 +19,7 @@ async fn main() -> anyhow::Result<()> {
     // Setup router
     let app = Router::new()
         .route("/search", post(api::search_handler))
+        .route("/index", post(api::index_handler))
         .with_state(state);
 
     // Start server
