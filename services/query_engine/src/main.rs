@@ -8,10 +8,19 @@ mod api;
 use anyhow::Ok;
 use axum::{routing::post, Router};
 use tokio::net::TcpListener;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    println!("Starting query engine...");
+    tracing_subscriber::fmt()
+    .with_env_filter(
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| "query_engine=info".into())
+    )
+    .with_timer(tracing_subscriber::fmt::time::ChronoLocal::new("%H:%M:%S".to_string()))
+    .init();
+
+    info!("Starting query engine...");
 
     // Initialize DB
     let state = db::init().await?;
@@ -24,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Start server
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
-    println!("Query Engine listening on http://0.0.0.0:8080");
+    info!("Query Engine listening on http://0.0.0.0:8080");
     axum::serve(listener, app).await?;
 
     Ok(())

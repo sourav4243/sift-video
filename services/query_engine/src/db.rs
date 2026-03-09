@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::{sync::Arc, collections::HashMap, time::Duration};
 use tokio::time::sleep;
 use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, VectorParamsBuilder, SearchPointsBuilder, Value, value::Kind, UpsertPointsBuilder, PointStruct}};
+use tracing::{info, warn, error};
 
 use crate::models::{IndexRequest, SearchResult};
 
@@ -17,7 +18,7 @@ pub async fn init() -> Result<Arc<AppState>> {
     let qdrant_url = std::env::var("QDRANT_URL")
         .unwrap_or_else(|_| "http://localhost:6334".to_string());
 
-    println!("Connecting to Qdrant at {}", qdrant_url);
+    info!("Connecting to Qdrant at {}", qdrant_url);
 
     // retry loop
     let mut retries = 5;
@@ -26,15 +27,15 @@ pub async fn init() -> Result<Arc<AppState>> {
             Ok(c) => {
                 match c.health_check().await {
                     Ok(_) => {
-                        println!("Successfully connected to Qdrant!");
+                        info!("Successfully connected to Qdrant!");
                         break c;
                     },
                     Err(e) => {
-                        println!("Qdrant not ready yet: {}", e);
+                        warn!("Qdrant not ready yet: {}", e);
                     }
                 }
             },
-            Err(e) => println!("Failed to build client: {}", e),
+            Err(e) => error!("Failed to build client: {}", e),
         }
 
         if retries == 0 {
@@ -54,7 +55,7 @@ pub async fn init() -> Result<Arc<AppState>> {
 
 async fn ensure_collection(client: &Qdrant, name: &str) -> Result<()> {
     if !client.collection_exists(name).await? {
-        println!("Creating collection: {}", name);
+        info!("Creating collection: {}", name);
 
         client.create_collection(
             CreateCollectionBuilder::new(name)
@@ -91,7 +92,7 @@ pub async fn upsert_embedding(client: &Qdrant, req: IndexRequest) -> Result<Stri
         UpsertPointsBuilder::new(collection, vec![point])
     ).await?;
 
-    println!("Indexed [{}] id={} video={} t={:.2}s",
+    info!("Indexed [{}] id={} video={} t={:.2}s",
     collection, req.id, req.metadata.video_id, req.metadata.start_time);
 
     Ok(collection.to_string())

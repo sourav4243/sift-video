@@ -1,5 +1,6 @@
 use std::sync::Arc;
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use tracing::{info, error};
 
 use crate::models::{SearchRequest, SearchResponse, IndexRequest, IndexResponse};
 use crate::db::{AppState, search_multimodal, upsert_embedding};
@@ -7,19 +8,21 @@ use crate::db::{AppState, search_multimodal, upsert_embedding};
 pub async fn search_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<SearchRequest>
-) -> Json<SearchResponse> {
+) -> impl IntoResponse {
     
     if payload.query.trim().is_empty() {
-        return Json(SearchResponse { results: vec![] });
+        return (StatusCode::BAD_REQUEST, Json(SearchResponse { results: vec![] })).into_response();
     }
     
-    println!("Received query: {}", payload.query);
+    info!("Received query: {}", payload.query);
 
     match search_multimodal(&state.qdrant, payload.query).await {
-        Ok(results) => Json(SearchResponse { results }),
+        Ok(results) => {
+            (StatusCode::OK, Json(SearchResponse { results })).into_response()
+        }
         Err(e) => {
-            eprintln!("Search failed: {:?}", e);
-            return Json(SearchResponse { results: vec![] });
+            error!("Search failed: {:?}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(SearchResponse { results: vec![] })).into_response()
         }
     }
 }
@@ -37,7 +40,7 @@ pub async fn index_handler(
             (StatusCode::OK, Json(resp))
         }
         Err(e) => {
-            eprintln!("Index failed for id={}: {:?}", id, e);
+            error!("Index failed for id={}: {:?}", id, e);
             let resp = IndexResponse { success: false, id, collection: String::new() };
             (StatusCode::INTERNAL_SERVER_ERROR, Json(resp))
         }
