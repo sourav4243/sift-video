@@ -12,3 +12,7 @@ anyhow = "1.0.100"
 qdrant-client = "1.16.0"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "chrono"] }
+ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
+tokenizers = { version = "0.22.2", default-features = false, features = ["onig"] }
+ndarray = "0.17.2"
+

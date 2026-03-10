@@ -27,10 +27,15 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libssl3\
+    libssl3 \
+    libonnxruntime \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/query_engine .
+
+# Model and tokenizer must be present at build time in services/query_engine/models/ 
+COPY models/model.onnx ./models/model.onnx
+COPY models/tokenizer.json ./models/tokenizer.json
 
 EXPOSE 8080
 

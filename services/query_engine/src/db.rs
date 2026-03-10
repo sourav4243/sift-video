@@ -1,8 +1,10 @@
 use anyhow::Result;
-use std::{sync::Arc, collections::HashMap, time::Duration};
+use std::{sync::{Arc, Mutex}, collections::HashMap, time::Duration};
 use tokio::time::sleep;
 use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, VectorParamsBuilder, SearchPointsBuilder, Value, value::Kind, UpsertPointsBuilder, PointStruct}};
-use tracing::{info, warn, error};
+use tracing::{error, info, info_span, warn};
+use ort::{inputs, session::Session}; 
+use tokenizers::Tokenizer;
 
 use crate::models::{IndexRequest, SearchResult};
 
@@ -10,13 +12,23 @@ const VECTOR_SIZE: u64 = 512;
 const AUDIO_COLLECTION: &str = "audio_segments";
 const VISUAL_COLLECTION: &str = "visual_frames";
 
+const CLIP_MAX_TOKENS: usize = 77;
+
 pub struct AppState {
-    pub qdrant: Qdrant,
+    pub qdrant: Arc<Qdrant>,
+    pub clip_session: Arc<Mutex<Session>>,
+    pub tokenizer: Arc<Tokenizer>,
 }
 
 pub async fn init() -> Result<Arc<AppState>> {
     let qdrant_url = std::env::var("QDRANT_URL")
         .unwrap_or_else(|_| "http://localhost:6334".to_string());
+
+    let model_path = std::env::var("CLIP_MODEL_PATH")
+        .unwrap_or_else(|_| "models/model.onnx".to_string());
+
+    let tokenizer_path = std::env::var("CLIP_TOKENIZER_PATH")
+        .unwrap_or_else(|_| "models/tokenizer.json".to_string());
 
     info!("Connecting to Qdrant at {}", qdrant_url);
 
@@ -50,7 +62,22 @@ pub async fn init() -> Result<Arc<AppState>> {
     ensure_collection(&client, AUDIO_COLLECTION).await?;
     ensure_collection(&client, VISUAL_COLLECTION).await?;
 
-    Ok(Arc::new(AppState { qdrant: client }))
+    // load CLIP model
+    info!("Loading CLIP model from {}", model_path);
+    let clip_session = Session::builder()?.commit_from_file(&model_path)?;
+
+    // load tokenizer
+    info!("Loading tokenizer from {}", tokenizer_path);
+    let tokenizer = Tokenizer::from_file(&tokenizer_path)
+        .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
+
+    info!("CLIP model and tokenizer loaded");
+
+    Ok(Arc::new(AppState {
+        qdrant: Arc::new(client),
+        clip_session: Arc::new(Mutex::new(clip_session)),
+        tokenizer: Arc::new(tokenizer),
+    }))
 }
 
 async fn ensure_collection(client: &Qdrant, name: &str) -> Result<()> {
@@ -63,6 +90,57 @@ async fn ensure_collection(client: &Qdrant, name: &str) -> Result<()> {
         ).await?;
     }
     Ok(())
+}
+
+pub fn embed_query(state: &AppState, query: &str) -> Result<Vec<f32>> {
+    // Tokenize
+    let encoding = state.tokenizer.encode(query, true)
+        .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
+
+    // pad/truncate to CLIP_MAX_TOKENS
+    let mut input_ids: Vec<i64> = encoding.get_ids()
+        .iter().map(|&x| x as i64).collect();
+    let mut attention_mask: Vec<i64> = encoding.get_attention_mask()
+        .iter().map(|&x| x as i64).collect();
+
+    input_ids.truncate(CLIP_MAX_TOKENS);
+    attention_mask.truncate(CLIP_MAX_TOKENS);
+
+    while input_ids.len() < CLIP_MAX_TOKENS {
+        input_ids.push(0);
+        attention_mask.push(0);
+    }
+
+    let input_ids_arr = ndarray::Array2::from_shape_vec(
+        (1, CLIP_MAX_TOKENS), input_ids
+    )?.into_dyn();
+    let attention_mask_arr = ndarray::Array2::from_shape_vec(
+        (1, CLIP_MAX_TOKENS), attention_mask
+    )?.into_dyn();
+
+    let pixel_values_arr = ndarray::Array4::<f32>::zeros((1, 3, 224, 224)).into_dyn();
+
+    let input_ids_val = ort::value::Value::from_array(input_ids_arr)?;
+    let attn_mask_val = ort::value::Value::from_array(attention_mask_arr)?;
+    let pixel_values_val = ort::value::Value::from_array(pixel_values_arr)?;
+
+    let mut session = state.clip_session.lock()
+        .map_err(|e| anyhow::anyhow!("Session mutex poisoned: {}", e))?;
+
+    let outputs = session.run(inputs![
+        "input_ids" => input_ids_val,
+        "attention_mask" => attn_mask_val,
+        "pixel_values" => pixel_values_val
+    ])?;
+
+    let (_shape, data) = outputs["text_embeds"]
+        .try_extract_tensor::<f32>()?;
+
+    let vector: Vec<f32> = data.iter().cloned().collect();
+
+    info!(dims = vector.len(), "Query embedded");
+
+    Ok(vector)
 }
 
 pub async fn upsert_embedding(client: &Qdrant, req: IndexRequest) -> Result<String> {
@@ -98,20 +176,20 @@ pub async fn upsert_embedding(client: &Qdrant, req: IndexRequest) -> Result<Stri
     Ok(collection.to_string())
 }
 
-pub async fn search_multimodal(client: &Qdrant, _query: String) -> Result<Vec<SearchResult>> {
-    // TODO!
-    // Vectorize: Run CLIP model here
-    let dummy_vector = vec![0.1; VECTOR_SIZE as usize];
+pub async fn search_multimodal(state: &AppState, query: String) -> Result<Vec<SearchResult>> {
+    let _span = info_span!("search_multimodal").entered();
+
+    let query_vector = embed_query(state, &query)?;
 
     // Search Audio
-    let audio_future = client.search_points(
-        SearchPointsBuilder::new(AUDIO_COLLECTION, dummy_vector.clone(), 5)
+    let audio_future = state.qdrant.search_points(
+        SearchPointsBuilder::new(AUDIO_COLLECTION, query_vector.clone(), 5)
             .with_payload(true)
     );
 
     // Search Visual
-    let visual_future = client.search_points(
-        SearchPointsBuilder::new(VISUAL_COLLECTION, dummy_vector, 5)
+    let visual_future = state.qdrant.search_points(
+        SearchPointsBuilder::new(VISUAL_COLLECTION, query_vector, 5)
             .with_payload(true)
     );
 

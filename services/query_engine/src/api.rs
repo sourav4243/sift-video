@@ -16,7 +16,7 @@ pub async fn search_handler(
     
     info!("Received query: {}", payload.query);
 
-    match search_multimodal(&state.qdrant, payload.query).await {
+    match search_multimodal(&state, payload.query).await {
         Ok(results) => {
             (StatusCode::OK, Json(SearchResponse { results })).into_response()
         }
