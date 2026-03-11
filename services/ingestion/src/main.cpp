@@ -5,6 +5,7 @@
 #include <sstream>
 #include <vector>
 #include <cstdio>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
@@ -41,6 +42,37 @@ struct Segment {
     double end_time;
 };
 
+
+void write_frames_metadata(const fs::path frames_dir, double interval_sec){
+    std::vector<std::string> frames;
+
+    for(const auto& entry : fs::directory_iterator(frames_dir)){
+        if(entry.is_regular_file()){
+            frames.push_back(entry.path().filename().string());
+        }
+    }
+
+    std::sort(frames.begin(), frames.end());
+
+    std::ofstream out(frames_dir / "frames.json");
+    out << "[\n";
+
+    for(size_t i=0; i<frames.size(); i++){
+        double timestamp = i * interval_sec;
+
+        out << "  {\n";
+        out << "    \"frame_id\": \"" << frames[i] << "\",\n";
+        out << "    \"timestamp\": " << timestamp << "\n";
+        out << "  }";
+
+        if(i+1 < frames.size()) out << ",";
+        out << "\n";
+    }
+
+    out << "]\n";
+}
+
+
 int main() {
     fs::path videos_dir = "/videos";
     fs::path output_dir = "/output";
@@ -71,6 +103,9 @@ int main() {
             std::cerr << "FFmpeg frame extraction failed for " << video_path << std::endl;
             continue;
         }
+
+        // Generate frame timestamps (fps = 1/2 -> 2 seconds)
+        write_frames_metadata(frames_dir, 2.0);
 
         // Video to Audio
         std::string audio_path = (output_dir / (video_stem + ".wav")).string();
