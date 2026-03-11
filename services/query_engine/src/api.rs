@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{Json, extract::State, http::StatusCode, response::{IntoResponse, Response}};
 use tracing::{info, error};
 
 use crate::models::{SearchRequest, SearchResponse, IndexRequest, IndexResponse};
@@ -8,7 +8,7 @@ use crate::db::{AppState, search_multimodal, upsert_embedding};
 pub async fn search_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<SearchRequest>
-) -> impl IntoResponse {
+) -> Response {
     
     if payload.query.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, Json(SearchResponse { results: vec![] })).into_response();

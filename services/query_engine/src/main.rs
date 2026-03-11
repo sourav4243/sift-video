@@ -5,7 +5,6 @@ mod models;
 mod db;
 mod api;
 
-use std::sync::Arc;
 use anyhow::Ok;
 use axum::{routing::post, Router};
 use tokio::net::TcpListener;
@@ -30,7 +29,8 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/search", post(api::search_handler))
         .route("/index", post(api::index_handler))
-        .with_state(state);
+        .with_state(state)
+        .into_make_service();
 
     // Start server
     let listener = TcpListener::bind("0.0.0.0:8080").await?;

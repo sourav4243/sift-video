@@ -14,6 +14,7 @@ const VISUAL_COLLECTION: &str = "visual_frames";
 
 const CLIP_MAX_TOKENS: usize = 77;
 
+#[derive(Clone)]
 pub struct AppState {
     pub qdrant: Arc<Qdrant>,
     pub clip_session: Arc<Mutex<Session>>,
@@ -92,7 +93,7 @@ async fn ensure_collection(client: &Qdrant, name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn embed_query(state: &AppState, query: &str) -> Result<Vec<f32>> {
+pub fn embed_query(state: &Arc<AppState>, query: &str) -> Result<Vec<f32>> {
     // Tokenize
     let encoding = state.tokenizer.encode(query, true)
         .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
@@ -176,8 +177,10 @@ pub async fn upsert_embedding(client: &Qdrant, req: IndexRequest) -> Result<Stri
     Ok(collection.to_string())
 }
 
-pub async fn search_multimodal(state: &AppState, query: String) -> Result<Vec<SearchResult>> {
-    let _span = info_span!("search_multimodal").entered();
+pub async fn search_multimodal(state: &Arc<AppState>, query: String) -> Result<Vec<SearchResult>> {
+    info_span!("search_multimodal").in_scope(|| {
+        info!(query = query.as_str(), "Starting multimodal search");
+    });
 
     let query_vector = embed_query(state, &query)?;
 
