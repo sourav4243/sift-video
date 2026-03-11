@@ -199,13 +199,14 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String) -> Result<V
     // Run parallel
     let (audio_results, visual_results) = tokio::join!(audio_future, visual_future);
 
-    let mut final_results = Vec::new();
+    let mut audio_hits: Vec<SearchResult> = Vec::new();
+    let mut visual_hits: Vec<SearchResult> = Vec::new();
 
     // Process audio (weight = 0.6)
     if let Ok(response) = audio_results {
         for point in response.result {
             let payload = point.payload;
-            final_results.push(SearchResult {
+            audio_hits.push(SearchResult {
                 video_id: get_str(&payload, "video_id"),
                 video_name: get_str(&payload, "video_name"),
                 timestamp: get_f64(&payload, "start_time"),
@@ -220,7 +221,7 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String) -> Result<V
     if let Ok(response) = visual_results {
         for point in response.result {
             let payload = point.payload;
-            final_results.push(SearchResult {
+            visual_hits.push(SearchResult {
                 video_id: get_str(&payload, "video_id"),
                 video_name: get_str(&payload, "video_name"),
                 timestamp: get_f64(&payload, "start_time"),
@@ -228,6 +229,40 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String) -> Result<V
                 match_type: "visual".to_string(),
                 match_context: "Visual Frame".to_string(),
             });
+        }
+    }
+
+    const MERGE_WINDOW: f64 = 2.0;
+
+    let mut final_results: Vec<SearchResult> = Vec::new();
+    let mut matched_visual: Vec<bool> = vec![false; visual_hits.len()];
+
+    for audio in audio_hits {
+        let mut merged_score = audio.score;
+
+        for (i, visual) in visual_hits.iter().enumerate() {
+            if visual.video_id == audio.video_id
+                && (visual.timestamp - audio.timestamp).abs() <= MERGE_WINDOW
+            {
+                merged_score += visual.score;
+                matched_visual[i] = true;
+            }
+        }
+
+        final_results.push(SearchResult {
+            score: merged_score,
+            match_type: if merged_score > audio.score {
+                "audio+visual".to_string()
+            } else {
+                "audio".to_string()
+            },
+            ..audio.clone()
+        });
+    }
+    
+    for (i, visual) in visual_hits.into_iter().enumerate() {
+        if !matched_visual[i] {
+            final_results.push(visual);
         }
     }
 

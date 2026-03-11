@@ -5,7 +5,7 @@ pub struct SearchRequest {
     pub query: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct SearchResult {
     pub video_id: String,
     pub video_name: String,
