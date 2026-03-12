@@ -2,4 +2,5 @@ videos/
 output/
 services/query_engine/target
 services/ingestion/external/whisper/models/*.bin
+services/embedding/models/*
 qdrant_storage
