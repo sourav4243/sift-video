@@ -1,5 +1,7 @@
 FROM ubuntu:22.04
 
+ENV DEBIAN_FRONTEND=noninteractive
+
 WORKDIR /app
 
 RUN apt-get update && \
@@ -8,15 +10,21 @@ RUN apt-get update && \
     cmake \
     pkg-config \
     wget \
-    libopencv-dev \
-    libonnxruntime-dev
+    libopencv-dev
+
+RUN wget https://github.com/microsoft/onnxruntime/releases/download/v1.17.3/onnxruntime-linux-x64-1.17.3.tgz && \
+    tar -xzf onnxruntime-linux-x64-1.17.3.tgz && \
+    mv onnxruntime-linux-x64-1.17.3 /onnxruntime
 
 COPY src ./src
 COPY models ./models
 
 RUN g++ src/main.cpp -o embed \
--I/usr/include/onnxruntime \
-`pkg-config --cflags --libs opencv4` \
--lonnxruntime
+-I/onnxruntime/include \
+-L/onnxruntime/lib \
+-lonnxruntime \
+`pkg-config --cflags --libs opencv4`
+
+ENV LD_LIBRARY_PATH=/onnxruntime/lib
 
 CMD ["./embed"]

@@ -53,8 +53,8 @@ int main(){
     const char* input_names[] = {"input_ids", "pixel_values", "attention_mask"};
     const char* output_names[] = {"image_embeds"};
     
-    fs::path frames_root = "../../output/frames";
-    fs::path embed_root = "../../output/embeddings";
+    fs::path frames_root = "/output/frames";
+    fs::path embed_root = "/output/embeddings";
 
     for(const auto& video_dir: fs::directory_iterator(frames_root)){
         if(!video_dir.is_directory()) continue;
