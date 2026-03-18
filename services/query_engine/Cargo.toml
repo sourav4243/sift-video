@@ -15,3 +15,4 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter", "chrono"] }
 ort = { version = "2.0.0-rc.12", features = ["load-dynamic"] }
 tokenizers = { version = "0.22.2", default-features = false, features = ["onig"] }
 ndarray = "0.17.2"
+uuid = { version = "1.22.0", features = ["v4"] }

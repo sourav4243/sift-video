@@ -21,6 +21,10 @@ services:
     environment:
       - QDRANT_URL=http://qdrant:6334
       - RUST_LOG=info
+      - OUTPUT_DIR=/output
+    volumes:
+      - ./output:/output
+      - ./services/query_engine/models:/app/models
     depends_on:
       - qdrant
   
@@ -33,3 +37,5 @@ services:
     volumes:
       - ./videos:/videos
       - ./output:/output
+    depends_on:
+      - qdrant

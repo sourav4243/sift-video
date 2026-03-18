@@ -1,12 +1,13 @@
 use anyhow::Result;
-use std::{sync::{Arc, Mutex}, collections::HashMap, time::Duration};
+use std::{fs, sync::{Arc, Mutex}, collections::HashMap, time::Duration};
 use tokio::time::sleep;
 use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, VectorParamsBuilder, SearchPointsBuilder, Value, value::Kind, UpsertPointsBuilder, PointStruct}};
 use tracing::{error, info, info_span, warn};
 use ort::{inputs, session::Session}; 
 use tokenizers::Tokenizer;
+use uuid::Uuid;
 
-use crate::models::{IndexRequest, SearchResult};
+use crate::models::{EmbeddingMetadata, IndexRequest, SearchResult};
 
 const VECTOR_SIZE: u64 = 512;
 const AUDIO_COLLECTION: &str = "audio_segments";
@@ -269,6 +270,125 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String) -> Result<V
     final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
 
     Ok(final_results)
+}
+
+pub async fn ingest_from_disk(state: &Arc<AppState>) -> Result<()> {
+    let output_dir = std::env::var("OUTPUT_DIR")
+        .unwrap_or_else(|_| "/output".to_string());
+
+    ingest_visual(state, &output_dir).await?;
+    ingest_audio(state, &output_dir).await?;
+
+    Ok(())
+}
+
+async fn ingest_visual(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
+    let embed_root = std::path::Path::new(output_dir).join("embeddings");
+
+    if !embed_root.exists() {
+        warn!("No embeddings directory found at {:?}, skipping visual ingest", embed_root);
+        return Ok(());
+    }
+
+    for video_dir in fs::read_dir(&embed_root)? {
+        let video_dir = video_dir?;
+        if !video_dir.file_type()?.is_dir() { continue; }
+
+        let video_name = video_dir.file_name().to_string_lossy().to_string();
+        let video_id = video_name.clone();
+
+        for entry in fs::read_dir(video_dir.path())? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().and_then(|e| e.to_str()) != Some("bin") { continue; }
+            
+            // derive timestamp from filename: frame_0001 -> index 1 -> 1 * 2.0s
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let frame_index = stem
+                .trim_start_matches("frame_")
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            let timestamp = frame_index * 2.0;
+
+            // read raw f32s
+            let bytes = fs::read(&path)?;
+            let vector: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+
+            if vector.len() != VECTOR_SIZE as usize {
+                warn!("Skipping {:?}: expected {} floats, got {}", path, VECTOR_SIZE, vector.len());
+                continue;
+            }
+
+            let req = IndexRequest {
+                id: Uuid::new_v4().to_string(),
+                vector,
+                metadata: EmbeddingMetadata {
+                    video_id: video_id.clone(),
+                    video_name: format!("{}.mp4", video_name),
+                    start_time: timestamp,
+                    end_time: timestamp + 2.0,
+                    modality: "visual".to_string(),
+                    text_content: None,
+                },
+            };
+
+            upsert_embedding(&state.qdrant, req).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn ingest_audio(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
+    let transcripts_path = std::path::Path::new(output_dir).join("transcripts.json");
+
+    if !transcripts_path.exists() {
+        warn!("No transcripts.json found at {:?}, skipping audio ingest", transcripts_path);
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&transcripts_path)?;
+
+    let segments: Vec<serde_json::Value> = serde_json::from_str(&content)?;
+
+    info!("Ingesting {} transcript segments", segments.len());
+
+    for seg in segments {
+        let video_id = seg["video_id"].as_str().unwrap_or("unknown").to_string();
+        let video_name = seg["video_name"].as_str().unwrap_or("unknown").to_string();
+        let segment_id = seg["segment_id"].as_str().unwrap_or("").to_string();
+        let text = seg["text"].as_str().unwrap_or("").to_string();
+        let start_time = seg["start_time"].as_f64().unwrap_or(0.0);
+        let end_time = seg["end_time"].as_f64().unwrap_or(0.0);
+
+        if text.is_empty() {
+            warn!("Skipping empty segment {}", segment_id);
+            continue;
+        }
+
+        let vector = embed_query(state, &text)?;
+
+        let req = IndexRequest {
+            id: Uuid::new_v4().to_string(),
+            vector,
+            metadata: EmbeddingMetadata {
+                video_id,
+                video_name,
+                start_time,
+                end_time,
+                modality: "audio".to_string(),
+                text_content: Some(text),
+            },
+        };
+
+        upsert_embedding(&state.qdrant, req).await?;
+    }
+
+    Ok(())
 }
 
 // Helpers

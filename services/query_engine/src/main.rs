@@ -25,6 +25,10 @@ async fn main() -> anyhow::Result<()> {
     // Initialize DB
     let state = db::init().await?;
 
+    info!("Ingesting embeddings from disk...");
+    db::ingest_from_disk(&state).await?;
+    info!("Ingest complete");
+
     // Setup router
     let app = Router::new()
         .route("/search", post(api::search_handler))
