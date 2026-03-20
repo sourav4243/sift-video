@@ -33,8 +33,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/search", post(api::search_handler))
         .route("/index", post(api::index_handler))
-        .with_state(state)
-        .into_make_service();
+        .with_state(state);
 
     // Start server
     let listener = TcpListener::bind("0.0.0.0:8080").await?;

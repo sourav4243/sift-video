@@ -19,12 +19,13 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - QDRANT_URL=http://qdrant:6334
       - RUST_LOG=info
+      - QDRANT_URL=http://qdrant:6334
       - OUTPUT_DIR=/output
     volumes:
       - ./output:/output
       - ./services/query_engine/models:/app/models
+      - huggingface_cache:/root/.cache/huggingface
     depends_on:
       - qdrant
   
@@ -39,3 +40,6 @@ services:
       - ./output:/output
     depends_on:
       - qdrant
+
+volumes:
+  huggingface_cache:

@@ -1,36 +1,26 @@
 use anyhow::Result;
-use std::{fs, sync::{Arc, Mutex}, collections::HashMap, time::Duration};
+use std::{fs, sync::Arc, collections::HashMap, time::Duration};
 use tokio::time::sleep;
 use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, VectorParamsBuilder, SearchPointsBuilder, Value, value::Kind, UpsertPointsBuilder, PointStruct}};
 use tracing::{error, info, info_span, warn};
-use ort::{inputs, session::Session}; 
-use tokenizers::Tokenizer;
 use uuid::Uuid;
+use open_clip_inference::TextEmbedder;
 
 use crate::models::{EmbeddingMetadata, IndexRequest, SearchResult};
 
-const VECTOR_SIZE: u64 = 512;
+const VECTOR_SIZE: u64 = 768;
 const AUDIO_COLLECTION: &str = "audio_segments";
 const VISUAL_COLLECTION: &str = "visual_frames";
-
-const CLIP_MAX_TOKENS: usize = 77;
 
 #[derive(Clone)]
 pub struct AppState {
     pub qdrant: Arc<Qdrant>,
-    pub clip_session: Arc<Mutex<Session>>,
-    pub tokenizer: Arc<Tokenizer>,
+    pub embedder: Arc<TextEmbedder>,
 }
 
 pub async fn init() -> Result<Arc<AppState>> {
     let qdrant_url = std::env::var("QDRANT_URL")
         .unwrap_or_else(|_| "http://localhost:6334".to_string());
-
-    let model_path = std::env::var("CLIP_MODEL_PATH")
-        .unwrap_or_else(|_| "models/model.onnx".to_string());
-
-    let tokenizer_path = std::env::var("CLIP_TOKENIZER_PATH")
-        .unwrap_or_else(|_| "models/tokenizer.json".to_string());
 
     info!("Connecting to Qdrant at {}", qdrant_url);
 
@@ -65,20 +55,13 @@ pub async fn init() -> Result<Arc<AppState>> {
     ensure_collection(&client, VISUAL_COLLECTION).await?;
 
     // load CLIP model
-    info!("Loading CLIP model from {}", model_path);
-    let clip_session = Session::builder()?.commit_from_file(&model_path)?;
-
-    // load tokenizer
-    info!("Loading tokenizer from {}", tokenizer_path);
-    let tokenizer = Tokenizer::from_file(&tokenizer_path)
-        .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
-
-    info!("CLIP model and tokenizer loaded");
+    info!("Loading CLIP text embedder...");
+    let embedder = TextEmbedder::from_hf("RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX").build().await?;
+    info!("CLIP text embedder loaded");
 
     Ok(Arc::new(AppState {
         qdrant: Arc::new(client),
-        clip_session: Arc::new(Mutex::new(clip_session)),
-        tokenizer: Arc::new(tokenizer),
+        embedder: Arc::new(embedder),
     }))
 }
 
@@ -94,55 +77,15 @@ async fn ensure_collection(client: &Qdrant, name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn embed_query(state: &Arc<AppState>, query: &str) -> Result<Vec<f32>> {
-    // Tokenize
-    let encoding = state.tokenizer.encode(query, true)
-        .map_err(|e| anyhow::anyhow!("Tokenization failed: {}", e))?;
-
-    // pad/truncate to CLIP_MAX_TOKENS
-    let mut input_ids: Vec<i64> = encoding.get_ids()
-        .iter().map(|&x| x as i64).collect();
-    let mut attention_mask: Vec<i64> = encoding.get_attention_mask()
-        .iter().map(|&x| x as i64).collect();
-
-    input_ids.truncate(CLIP_MAX_TOKENS);
-    attention_mask.truncate(CLIP_MAX_TOKENS);
-
-    while input_ids.len() < CLIP_MAX_TOKENS {
-        input_ids.push(0);
-        attention_mask.push(0);
-    }
-
-    let input_ids_arr = ndarray::Array2::from_shape_vec(
-        (1, CLIP_MAX_TOKENS), input_ids
-    )?.into_dyn();
-    let attention_mask_arr = ndarray::Array2::from_shape_vec(
-        (1, CLIP_MAX_TOKENS), attention_mask
-    )?.into_dyn();
-
-    let pixel_values_arr = ndarray::Array4::<f32>::zeros((1, 3, 224, 224)).into_dyn();
-
-    let input_ids_val = ort::value::Value::from_array(input_ids_arr)?;
-    let attn_mask_val = ort::value::Value::from_array(attention_mask_arr)?;
-    let pixel_values_val = ort::value::Value::from_array(pixel_values_arr)?;
-
-    let mut session = state.clip_session.lock()
-        .map_err(|e| anyhow::anyhow!("Session mutex poisoned: {}", e))?;
-
-    let outputs = session.run(inputs![
-        "input_ids" => input_ids_val,
-        "attention_mask" => attn_mask_val,
-        "pixel_values" => pixel_values_val
-    ])?;
-
-    let (_shape, data) = outputs["text_embeds"]
-        .try_extract_tensor::<f32>()?;
-
-    let vector: Vec<f32> = data.iter().cloned().collect();
-
-    info!(dims = vector.len(), "Query embedded");
-
-    Ok(vector)
+pub async fn embed_query(state: &Arc<AppState>, query: &str) -> Result<Vec<f32>> {
+    let state = state.clone();
+    let query = query.to_string();
+    let row = tokio::task::spawn_blocking(move || {
+        let vector = state.embedder.embed_texts(&[query.as_str()])?;
+        Ok::<Vec<f32>, anyhow::Error>(vector.row(0).to_vec())
+    }).await??;
+    info!(dims = row.len(), "Query embedded");
+    Ok(row)
 }
 
 pub async fn upsert_embedding(client: &Qdrant, req: IndexRequest) -> Result<String> {
@@ -183,7 +126,7 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String) -> Result<V
         info!(query = query.as_str(), "Starting multimodal search");
     });
 
-    let query_vector = embed_query(state, &query)?;
+    let query_vector = embed_query(state, &query).await?;
 
     // Search Audio
     let audio_future = state.qdrant.search_points(
@@ -275,6 +218,20 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String) -> Result<V
 pub async fn ingest_from_disk(state: &Arc<AppState>) -> Result<()> {
     let output_dir = std::env::var("OUTPUT_DIR")
         .unwrap_or_else(|_| "/output".to_string());
+
+    // skip if already indexed
+    let audio_count = state.qdrant.count(
+        qdrant_client::qdrant::CountPointsBuilder::new(AUDIO_COLLECTION)
+    ).await?.result.unwrap_or_default().count;
+
+    let visual_count = state.qdrant.count(
+        qdrant_client::qdrant::CountPointsBuilder::new(VISUAL_COLLECTION)
+    ).await?.result.unwrap_or_default().count;
+
+    if audio_count > 0 || visual_count > 0 {
+        info!("Collections already populated");
+        return Ok(());
+    }
 
     ingest_visual(state, &output_dir).await?;
     ingest_audio(state, &output_dir).await?;
@@ -370,7 +327,7 @@ async fn ingest_audio(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
             continue;
         }
 
-        let vector = embed_query(state, &text)?;
+        let vector = embed_query(state, &text).await?;
 
         let req = IndexRequest {
             id: Uuid::new_v4().to_string(),
