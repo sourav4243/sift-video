@@ -12,9 +12,9 @@ RUN apt-get update && \
     wget \
     libopencv-dev
 
-RUN wget https://github.com/microsoft/onnxruntime/releases/download/v1.17.3/onnxruntime-linux-x64-1.17.3.tgz && \
-    tar -xzf onnxruntime-linux-x64-1.17.3.tgz && \
-    mv onnxruntime-linux-x64-1.17.3 /onnxruntime
+RUN wget https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-1.20.1.tgz && \
+    tar -xzf onnxruntime-linux-x64-1.20.1.tgz && \
+    mv onnxruntime-linux-x64-1.20.1 /onnxruntime
 
 COPY src ./src
 COPY models ./models

@@ -13,16 +13,16 @@ std::vector<float> preprocess(const std::string& path){
     if(img.empty()) throw std::runtime_error("Failed to load image");
 
     cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
-    cv::resize(img, img, cv::Size(224, 224));
+    cv::resize(img, img, cv::Size(256, 256));
     img.convertTo(img, CV_32F, 1.0/255.0);
     
-    std::vector<float> tensor(3*224*224);
+    std::vector<float> tensor(3*256*256);
 
-    for(int y=0; y<224; y++){
-        for(int x=0; x<224; x++){
+    for(int y=0; y<256; y++){
+        for(int x=0; x<256; x++){
             cv::Vec3f p = img.at<cv::Vec3f>(y, x);
             for(int c=0; c<3; c++){
-                tensor[c*224*224 + y*224 + x] = p[c];
+                tensor[c*256*256 + y*256 + x] = p[c];
             }
         }
     }
@@ -39,19 +39,14 @@ int main(){
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "clip");
     Ort::SessionOptions opts;
 
-    Ort::Session session(env, "models/clip_image16.onnx", opts);
+    Ort::Session session(env, "models/visual.onnx", opts);
 
     Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
+    std::vector<int64_t> image_shape = {1, 3, 256, 256};
     
-    std::vector<int64_t> image_shape = {1, 3, 224, 224};
-    std::vector<int64_t> text_shape = {1, 77};
-    
-    std::vector<int64_t> input_ids_data(77,0);
-    std::vector<int64_t> attention_mask_data(77,1);
-    
-    const char* input_names[] = {"input_ids", "pixel_values", "attention_mask"};
-    const char* output_names[] = {"image_embeds"};
+    const char* input_names[] = {"pixel_values"};
+    const char* output_names[] = {"image_embeddings"};
     
     fs::path frames_root = "/output/frames";
     fs::path embed_root = "/output/embeddings";
@@ -79,40 +74,16 @@ int main(){
                 image_shape.data(),
                 image_shape.size()
             );
-
-            Ort::Value input_ids = Ort::Value::CreateTensor<int64_t>(
-                mem,
-                input_ids_data.data(),
-                input_ids_data.size(),
-                text_shape.data(),
-                text_shape.size()
-            );
-            
-            Ort::Value attention_mask = Ort::Value::CreateTensor<int64_t>(
-                mem,
-                attention_mask_data.data(),
-                attention_mask_data.size(),
-                text_shape.data(),
-                text_shape.size()
-            );
         
-            Ort::Value inputs[] = {
-                std::move(input_ids),
-                std::move(pixel_values),
-                std::move(attention_mask)
-            };
+            Ort::Value inputs[] = { std::move(pixel_values) };
 
             auto outputs = session.Run(
                 Ort::RunOptions{nullptr},
-                input_names,
-                inputs,
-                3,
-                output_names,
-                1
+                input_names, inputs, 1,
+                output_names, 1
             );
 
             float* embed = outputs[0].GetTensorMutableData<float>();
-
             size_t embed_size = outputs[0].GetTensorTypeAndShapeInfo().GetElementCount();
 
             std::string out_path = (out_dir / (frame_name + ".bin")).string();

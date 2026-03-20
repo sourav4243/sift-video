@@ -40,6 +40,18 @@ services:
       - ./output:/output
     depends_on:
       - qdrant
+  
+  # embedding service (NEW)
+  embedding:
+    build:
+      context: ./services/embedding
+      dockerfile: Dockerfile
+    container_name: sift_embedding
+    volumes:
+      - ./output:/output
+      - ./services/embedding/models:/app/models
+    depends_on:
+      - ingestion
 
 volumes:
   huggingface_cache:
