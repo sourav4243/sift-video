@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     libstdc++6 \
+    docker-compose \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/query_engine .

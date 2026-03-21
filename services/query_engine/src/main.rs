@@ -5,7 +5,7 @@ mod models;
 mod db;
 mod api;
 
-use std::time::Duration;
+use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 use axum::{Router, routing::{get, post}};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
@@ -34,9 +34,23 @@ async fn main() -> anyhow::Result<()> {
         info!("Initial ingest complete");
     }
 
+    let pipeline_running = Arc::new(AtomicBool::new(false));
+
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(30)).await;
+
+            // skip cycle if pipeline is already running
+            if pipeline_running.load(Ordering::SeqCst) {
+                info!("Pipeline already running, skipping cycle");
+                continue;
+            }
+
+            if let Err(e) = db::check_and_trigger_pipeline(&state_clone, Arc::clone(&pipeline_running)).await {
+                warn!("Pipeline check failed: {}", e);
+                pipeline_running.store(false, Ordering::SeqCst);
+            }
+
             if let Err(e) = db::ingest_from_disk(&state_clone).await {
                 warn!("Ingest cycle failed: {}", e);
             }

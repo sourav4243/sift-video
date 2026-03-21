@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::{collections::{HashMap, HashSet}, fs, sync::Arc, time::Duration};
+use std::{collections::{HashMap, HashSet}, fs, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
 use tokio::time::sleep;
 use qdrant_client::{Qdrant, qdrant::{Condition, CountPointsBuilder, CreateCollectionBuilder, Distance, Filter, PointStruct, SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder, value::Kind}};
 use tracing::{error, info, info_span, warn};
@@ -388,6 +388,77 @@ async fn is_video_indexed(client: &Qdrant, collection: &str, video_id: &str) -> 
     ).await;
 
     matches!(count, Ok(r)if r.result.unwrap_or_default().count > 0)
+}
+
+pub async fn check_and_trigger_pipeline(state: &Arc<AppState>, pipeline_running: Arc<AtomicBool>) -> Result<()> {
+    let videos_dir = "/videos";
+
+    let entries = match fs::read_dir(videos_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(()),
+    };
+
+    let video_extensions = ["mp4", "webm", "mkv", "mov", "avi", "ogv"];
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let ext = std::path::Path::new(&name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if !video_extensions.contains(&ext.as_str()) { continue; }
+
+        let stem = std::path::Path::new(&name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        let in_audio = is_video_indexed(&state.qdrant, AUDIO_COLLECTION, &stem).await;
+        let in_visual= is_video_indexed(&state.qdrant, VISUAL_COLLECTION, &stem).await;
+
+        if !in_audio || !in_visual {
+            info!("New video detected: {} - triggering ingestion pipeline", name);
+
+            pipeline_running.store(true, Ordering::SeqCst);
+
+            let flag = Arc::clone(&pipeline_running);
+            let state_spawn = Arc::clone(state);
+
+            tokio::spawn(async move {
+                trigger_pipeline().await;
+                if let Err(e) = ingest_from_disk(&state_spawn).await {
+                    warn!("Post-pipeline ingest faield: {}", e);
+                }
+                flag.store(false, Ordering::SeqCst);
+                info!("Pipeline complete, flag cleared");
+            });
+            break;
+        }
+    }
+    Ok(())
+}
+
+async fn trigger_pipeline() {
+    use tokio::process::Command;
+
+    for service in ["ingestion", "embedding"] {
+        info!("Running {}...", service);
+        let status = Command::new("docker-compose")
+            .args(["-f", "/app/docker-compose.yml", "run", "--rm", service])
+            .current_dir("/app")
+            .status()
+            .await;
+
+        match status {
+            Ok(s) if s.success() => info!("{} complete", service),
+            Ok(s) => warn!("{} exited with status: {}", service, s),
+            Err(e) => warn!("Failed to run {}: {}", service, e),
+        }
+    }
+
 }
 
 // Helpers

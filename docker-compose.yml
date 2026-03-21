@@ -26,7 +26,9 @@ services:
       - ./output:/output
       - ./videos:/videos
       - huggingface_cache:/root/.cache/huggingface
-      - ./services/query_engine/static:/app/static
+      - ./ui:/app/static
+      - ./docker-compose.yml:/app/docker-compose.yml
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - qdrant
   
