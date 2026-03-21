@@ -4,6 +4,7 @@
 #include <onnxruntime_cxx_api.h>
 #include <fstream>
 #include <filesystem>
+#include <unistd.h>
 
 namespace fs = std::filesystem;
 
@@ -36,6 +37,16 @@ void save_embedding(const std::string& path, float* data, size_t size){
 }
 
 int main(){
+    // wait for ingestion to finish (signals by completion of writing transcripts.json)
+    fs::path signal_file = "/output/transcripts.json";
+    std::cout << "Waiting for ingestion to complete...\n";
+    while(!fs::exists(signal_file)){
+        sleep(5);
+    }
+    // extra seconds to finish writing frames
+    sleep(2);
+    std::cout << "Ingestion complete, starting embedding...\n";
+
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "clip");
     Ort::SessionOptions opts;
 
