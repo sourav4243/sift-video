@@ -24,8 +24,9 @@ services:
       - OUTPUT_DIR=/output
     volumes:
       - ./output:/output
-      - ./services/query_engine/models:/app/models
+      - ./videos:/videos
       - huggingface_cache:/root/.cache/huggingface
+      - ./services/query_engine/static:/app/static
     depends_on:
       - qdrant
   
@@ -41,7 +42,7 @@ services:
     depends_on:
       - qdrant
   
-  # embedding service (NEW)
+  # embedding service
   embedding:
     build:
       context: ./services/embedding

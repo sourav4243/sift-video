@@ -1,5 +1,7 @@
 use std::sync::Arc;
-use axum::{Json, extract::State, http::StatusCode, response::{IntoResponse, Response}};
+use axum::{Json, extract::State, http::{StatusCode, header}, response::{IntoResponse, Response}};
+use tokio::fs::File;
+use tokio_util::io::ReaderStream;
 use tracing::{info, error};
 
 use crate::models::{SearchRequest, SearchResponse, IndexRequest, IndexResponse};
@@ -45,4 +47,43 @@ pub async fn index_handler(
             (StatusCode::INTERNAL_SERVER_ERROR, Json(resp))
         }
     }
+}
+
+pub async fn video_handler(
+    axum::extract::Path(filename): axum::extract::Path<String>,
+) -> Response {
+    let filename = filename.trim_start_matches('/');
+    let path = format!("/videos/{}", filename);
+
+    let mime = match std::path::Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase()
+        .as_str()
+    {
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mkv"  => "video/x-matroska",
+        "mov"  => "video/quicktime",
+        "avi"  => "video/x-msvideo",
+        "ogv"  => "video/ogg",
+        _      => "application/octet-stream",
+    };
+
+    let file = match File::open(&path).await {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Video not found: {} - {}", path, e);
+            return (StatusCode::NOT_FOUND, "not found").into_response();
+        }
+    };
+
+    let stream = ReaderStream::new(file);
+    let body = axum::body::Body::from_stream(stream);
+
+    Response::builder()
+        .header(header::CONTENT_TYPE, mime)
+        .body(body)
+        .unwrap()
 }

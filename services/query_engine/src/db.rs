@@ -1,7 +1,7 @@
 use anyhow::Result;
-use std::{fs, sync::Arc, collections::HashMap, time::Duration};
+use std::{collections::{HashMap, HashSet}, fs, sync::Arc, time::Duration};
 use tokio::time::sleep;
-use qdrant_client::{Qdrant, qdrant::{CreateCollectionBuilder, Distance, VectorParamsBuilder, SearchPointsBuilder, Value, value::Kind, UpsertPointsBuilder, PointStruct}};
+use qdrant_client::{Qdrant, qdrant::{Condition, CountPointsBuilder, CreateCollectionBuilder, Distance, Filter, PointStruct, SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder, value::Kind}};
 use tracing::{error, info, info_span, warn};
 use uuid::Uuid;
 use open_clip_inference::TextEmbedder;
@@ -11,6 +11,8 @@ use crate::models::{EmbeddingMetadata, IndexRequest, SearchResult};
 const VECTOR_SIZE: u64 = 768;
 const AUDIO_COLLECTION: &str = "audio_segments";
 const VISUAL_COLLECTION: &str = "visual_frames";
+const AUDIO_WEIGHT: f64 = 0.3;
+const VISUAL_WEIGHT: f64 = 0.7;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -146,7 +148,7 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String) -> Result<V
     let mut audio_hits: Vec<SearchResult> = Vec::new();
     let mut visual_hits: Vec<SearchResult> = Vec::new();
 
-    // Process audio (weight = 0.6)
+    // Process audio (weight)
     if let Ok(response) = audio_results {
         for point in response.result {
             let payload = point.payload;
@@ -154,14 +156,14 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String) -> Result<V
                 video_id: get_str(&payload, "video_id"),
                 video_name: get_str(&payload, "video_name"),
                 timestamp: get_f64(&payload, "start_time"),
-                score: point.score as f64 * 0.6,
+                score: point.score as f64 * AUDIO_WEIGHT,
                 match_type: "audio".to_string(),
                 match_context: get_str(&payload, "text_content"),
             });
         }
     }
 
-    // Process Visual (Weight = 0.4)
+    // Process Visual (weight)
     if let Ok(response) = visual_results {
         for point in response.result {
             let payload = point.payload;
@@ -169,7 +171,7 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String) -> Result<V
                 video_id: get_str(&payload, "video_id"),
                 video_name: get_str(&payload, "video_name"),
                 timestamp: get_f64(&payload, "start_time"),
-                score: point.score as f64 * 0.4,
+                score: point.score as f64 * VISUAL_WEIGHT,
                 match_type: "visual".to_string(),
                 match_context: "Visual Frame".to_string(),
             });
@@ -219,20 +221,6 @@ pub async fn ingest_from_disk(state: &Arc<AppState>) -> Result<()> {
     let output_dir = std::env::var("OUTPUT_DIR")
         .unwrap_or_else(|_| "/output".to_string());
 
-    // skip if already indexed
-    let audio_count = state.qdrant.count(
-        qdrant_client::qdrant::CountPointsBuilder::new(AUDIO_COLLECTION)
-    ).await?.result.unwrap_or_default().count;
-
-    let visual_count = state.qdrant.count(
-        qdrant_client::qdrant::CountPointsBuilder::new(VISUAL_COLLECTION)
-    ).await?.result.unwrap_or_default().count;
-
-    if audio_count > 0 || visual_count > 0 {
-        info!("Collections already populated");
-        return Ok(());
-    }
-
     ingest_visual(state, &output_dir).await?;
     ingest_audio(state, &output_dir).await?;
 
@@ -254,6 +242,29 @@ async fn ingest_visual(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
         let video_name = video_dir.file_name().to_string_lossy().to_string();
         let video_id = video_name.clone();
 
+        if is_video_indexed(&state.qdrant, VISUAL_COLLECTION, &video_id).await {
+            info!("Skipping already-indexed frames for {}", video_id);
+            continue;
+        }
+
+        let actual_filename = fs::read_dir("/videos")
+            .ok()
+            .and_then(|entries| {
+                entries.filter_map(|e| e.ok()).find_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let stem = std::path::Path::new(&name)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if stem == video_name { Some(name) } else { None }
+                })
+            })
+            .unwrap_or_else(|| {
+                warn!("Could not find video file for stem '{}', failling back to .mp4", video_name);
+                format!("{}.mp4", video_name)
+            });
+
         for entry in fs::read_dir(video_dir.path())? {
             let entry = entry?;
             let path = entry.path();
@@ -266,7 +277,7 @@ async fn ingest_visual(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
                 .trim_start_matches("frame_")
                 .parse::<f64>()
                 .unwrap_or(0.0);
-            let timestamp = frame_index * 2.0;
+            let timestamp = (frame_index - 1.0) * 2.0;
 
             // read raw f32s
             let bytes = fs::read(&path)?;
@@ -285,7 +296,7 @@ async fn ingest_visual(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
                 vector,
                 metadata: EmbeddingMetadata {
                     video_id: video_id.clone(),
-                    video_name: format!("{}.mp4", video_name),
+                    video_name: actual_filename.clone(),
                     start_time: timestamp,
                     end_time: timestamp + 2.0,
                     modality: "visual".to_string(),
@@ -314,13 +325,31 @@ async fn ingest_audio(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
 
     info!("Ingesting {} transcript segments", segments.len());
 
+    let mut skip_videos: HashSet<String> = HashSet::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for seg in &segments {
+        let video_id = seg["video_id"].as_str().unwrap_or("unknown").to_string();
+        if seen.insert(video_id.clone()) {
+            if is_video_indexed(&state.qdrant, AUDIO_COLLECTION, &video_id).await {
+                skip_videos.insert(video_id);
+            }
+        }
+    }
+
     for seg in segments {
         let video_id = seg["video_id"].as_str().unwrap_or("unknown").to_string();
+
+        if skip_videos.contains(&video_id) {
+            continue;
+        }
+
         let video_name = seg["video_name"].as_str().unwrap_or("unknown").to_string();
         let segment_id = seg["segment_id"].as_str().unwrap_or("").to_string();
         let text = seg["text"].as_str().unwrap_or("").to_string();
         let start_time = seg["start_time"].as_f64().unwrap_or(0.0);
         let end_time = seg["end_time"].as_f64().unwrap_or(0.0);
+
 
         if text.is_empty() {
             warn!("Skipping empty segment {}", segment_id);
@@ -346,6 +375,19 @@ async fn ingest_audio(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn is_video_indexed(client: &Qdrant, collection: &str, video_id: &str) -> bool {
+    let filter = Filter::must([
+        Condition::matches("video_id", video_id.to_string())
+    ]);
+
+    let count = client.count(
+        CountPointsBuilder::new(collection)
+            .filter(filter)
+    ).await;
+
+    matches!(count, Ok(r)if r.result.unwrap_or_default().count > 0)
 }
 
 // Helpers
