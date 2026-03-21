@@ -1,3 +1,6 @@
 [submodule "services/ingestion/external/whisper"]
 	path = services/ingestion/external/whisper
 	url = https://github.com/ggerganov/whisper.cpp
+[submodule "ui"]
+	path = ui
+	url = https://github.com/mel-edo/sift-video-ui
