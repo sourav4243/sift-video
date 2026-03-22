@@ -3,6 +3,7 @@ use serde::{Serialize, Deserialize};
 #[derive(Debug, Deserialize)]
 pub struct SearchRequest {
     pub query: String,
+    pub video_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -44,4 +45,17 @@ pub struct IndexResponse {
     pub success: bool,
     pub id: String,
     pub collection: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VideoInfo {
+    pub video_id: String,
+    pub video_name: String,
+    pub audio_segments: u64,
+    pub visual_frames: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VideoListResponse {
+    pub videos: Vec<VideoInfo>,
 }

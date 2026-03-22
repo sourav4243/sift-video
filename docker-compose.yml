@@ -27,8 +27,6 @@ services:
       - ./videos:/videos
       - huggingface_cache:/root/.cache/huggingface
       - ./ui:/app/static
-      - ./docker-compose.yml:/app/docker-compose.yml
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - qdrant
   
@@ -38,6 +36,7 @@ services:
       context: ./services/ingestion
       dockerfile: Dockerfile
     container_name: sift_ingestion
+    restart: always
     volumes:
       - ./videos:/videos
       - ./output:/output
@@ -50,6 +49,7 @@ services:
       context: ./services/embedding
       dockerfile: Dockerfile
     container_name: sift_embedding
+    restart: always
     volumes:
       - ./output:/output
       - ./services/embedding/models:/app/models

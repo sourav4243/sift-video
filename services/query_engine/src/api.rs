@@ -4,7 +4,7 @@ use tokio::{fs::File, io::AsyncReadExt};
 use tokio_util::io::ReaderStream;
 use tracing::{info, error};
 
-use crate::models::{SearchRequest, SearchResponse, IndexRequest, IndexResponse};
+use crate::{db, models::{IndexRequest, IndexResponse, SearchRequest, SearchResponse, VideoListResponse}};
 use crate::db::{AppState, search_multimodal, upsert_embedding};
 
 pub async fn search_handler(
@@ -18,7 +18,7 @@ pub async fn search_handler(
     
     info!("Received query: {}", payload.query);
 
-    match search_multimodal(&state, payload.query).await {
+    match search_multimodal(&state, payload.query, payload.video_id).await {
         Ok(results) => {
             (StatusCode::OK, Json(SearchResponse { results })).into_response()
         }
@@ -137,4 +137,58 @@ pub async fn video_handler(
         .header(header::ACCEPT_RANGES, "bytes")
         .body(body)
         .unwrap()
+}
+
+pub async fn video_list_handler(
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    match db::list_indexed_videos(&state).await {
+        Ok(videos) => {
+            (StatusCode::OK, Json(VideoListResponse { videos })).into_response()
+        }
+        Err(e) => {
+            error!("Failed to list videos: {:?}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response()
+        }
+    }
+}
+
+pub async fn upload_handler(
+    mut multipart: axum::extract::Multipart,
+) -> Response {
+    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
+        let filename = match field.file_name() {
+            Some(f) => f.to_string(),
+            None => continue,
+        };
+
+        let allowed = ["mp4", "webm", "mkv", "mov", "avi", "ogv"];
+        let ext = std::path::Path::new(&filename)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        if !allowed.contains(&ext.as_str()) {
+            return (StatusCode::BAD_REQUEST, "unsupported file type").into_response();
+        }
+
+        let path = format!("/videos/{}", filename);
+        let data = match field.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                error!("Failed to read upload: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "read error").into_response();
+            }
+        };
+
+        if let Err(e) = tokio::fs::write(&path, data).await {
+            error!("Failed to write video: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "write error").into_response();
+        }
+
+        info!("Uploaded: {}", filename);
+    }
+
+    StatusCode::OK.into_response()
 }

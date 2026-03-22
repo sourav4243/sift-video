@@ -6,7 +6,7 @@ use tracing::{error, info, info_span, warn};
 use uuid::Uuid;
 use open_clip_inference::TextEmbedder;
 
-use crate::models::{EmbeddingMetadata, IndexRequest, SearchResult};
+use crate::models::{EmbeddingMetadata, IndexRequest, SearchResult, VideoInfo};
 
 const VECTOR_SIZE: u64 = 768;
 const AUDIO_COLLECTION: &str = "audio_segments";
@@ -123,27 +123,37 @@ pub async fn upsert_embedding(client: &Qdrant, req: IndexRequest) -> Result<Stri
     Ok(collection.to_string())
 }
 
-pub async fn search_multimodal(state: &Arc<AppState>, query: String) -> Result<Vec<SearchResult>> {
+pub async fn search_multimodal(state: &Arc<AppState>, query: String, video_id: Option<String>) -> Result<Vec<SearchResult>> {
     info_span!("search_multimodal").in_scope(|| {
         info!(query = query.as_str(), "Starting multimodal search");
     });
 
     let query_vector = embed_query(state, &query).await?;
 
+    // build optional filter
+    let filter = video_id.as_ref().map(|id| {
+        Filter::must([Condition::matches("video_id", id.clone())])
+    });
+
     // Search Audio
-    let audio_future = state.qdrant.search_points(
-        SearchPointsBuilder::new(AUDIO_COLLECTION, query_vector.clone(), 5)
-            .with_payload(true)
-    );
+    let mut audio_builder = SearchPointsBuilder::new(AUDIO_COLLECTION, query_vector.clone(), 5)
+        .with_payload(true);
+    if let Some(ref f) = filter {
+        audio_builder = audio_builder.filter(f.clone());
+    }
 
     // Search Visual
-    let visual_future = state.qdrant.search_points(
-        SearchPointsBuilder::new(VISUAL_COLLECTION, query_vector, 5)
-            .with_payload(true)
-    );
+    let mut visual_builder = SearchPointsBuilder::new(VISUAL_COLLECTION, query_vector, 5)
+        .with_payload(true);
+    if let Some(ref f) = filter {
+        visual_builder = visual_builder.filter(f.clone());
+    }
 
     // Run parallel
-    let (audio_results, visual_results) = tokio::join!(audio_future, visual_future);
+    let (audio_results, visual_results) = tokio::join!(
+        state.qdrant.search_points(audio_builder),
+        state.qdrant.search_points(visual_builder)
+    );
 
     let mut audio_hits: Vec<SearchResult> = Vec::new();
     let mut visual_hits: Vec<SearchResult> = Vec::new();
@@ -390,12 +400,12 @@ async fn is_video_indexed(client: &Qdrant, collection: &str, video_id: &str) -> 
     matches!(count, Ok(r)if r.result.unwrap_or_default().count > 0)
 }
 
-pub async fn check_and_trigger_pipeline(state: &Arc<AppState>, pipeline_running: Arc<AtomicBool>) -> Result<()> {
+pub async fn check_and_trigger_pipeline(state: &Arc<AppState>, pipeline_running: Arc<AtomicBool>) -> Result<bool> {
     let videos_dir = "/videos";
 
     let entries = match fs::read_dir(videos_dir) {
         Ok(e) => e,
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(false),
     };
 
     let video_extensions = ["mp4", "webm", "mkv", "mov", "avi", "ogv"];
@@ -435,30 +445,95 @@ pub async fn check_and_trigger_pipeline(state: &Arc<AppState>, pipeline_running:
                 flag.store(false, Ordering::SeqCst);
                 info!("Pipeline complete, flag cleared");
             });
-            break;
+            return Ok(true);
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 async fn trigger_pipeline() {
-    use tokio::process::Command;
-
-    for service in ["ingestion", "embedding"] {
-        info!("Running {}...", service);
-        let status = Command::new("docker-compose")
-            .args(["-f", "/app/docker-compose.yml", "run", "--rm", service])
-            .current_dir("/app")
-            .status()
-            .await;
-
-        match status {
-            Ok(s) if s.success() => info!("{} complete", service),
-            Ok(s) => warn!("{} exited with status: {}", service, s),
-            Err(e) => warn!("Failed to run {}: {}", service, e),
-        }
+    use tokio::fs;
+    use tokio::time::sleep;
+    // trigger ingestion
+    info!("Triggering ingestion...");
+    if let Err(e) = fs::write("/output/.trigger_ingest", b"1").await {
+        warn!("Failed to write ingest trigger: {}", e);
+        return;
     }
 
+    // wait for ingestion to finish (it deletes the file when done)
+    loop {
+        sleep(Duration::from_secs(5)).await;
+        match fs::metadata("/output/.trigger_ingest").await {
+            Err(_) => break, // file gone = ingestion done
+            Ok(_) => info!("Waiting for ingestion to complete..."),
+        }
+    }
+    info!("Ingestion complete");
+
+    // trigger embedding
+    info!("Triggering embedding...");
+    if let Err(e) = fs::write("/output/.trigger_embed", b"1").await {
+        warn!("Failed to write embed trigger: {}", e);
+        return;
+    }
+
+    loop {
+        sleep(Duration::from_secs(5)).await;
+        match fs::metadata("/output/.trigger_embed").await {
+            Err(_) => break, // file gone = embedding done
+            Ok(_) => info!("Waiting for embedding to complete..."),
+        }
+    }
+    info!("Embedding complete");
+}
+
+pub async fn list_indexed_videos(state: &Arc<AppState>) -> Result<Vec<VideoInfo>> {
+    use qdrant_client::qdrant::ScrollPointsBuilder;
+
+    let mut map: HashMap<String, VideoInfo> = HashMap::new();
+
+    // scroll audio collection
+    let audio = state.qdrant.scroll(
+        ScrollPointsBuilder::new(AUDIO_COLLECTION)
+        .with_payload(true)
+        .limit(1000)
+    ).await?;
+
+    for point in audio.result {
+        let video_id = get_str(&point.payload, "video_id");
+        let video_name = get_str(&point.payload, "video_name");
+        let entry = map.entry(video_id.clone()).or_insert(VideoInfo {
+            video_id,
+            video_name,
+            audio_segments: 0,
+            visual_frames: 0,
+        });
+        entry.audio_segments += 1;
+    }
+
+    // scroll visual collection
+    let visual = state.qdrant.scroll(
+        ScrollPointsBuilder::new(VISUAL_COLLECTION)
+            .with_payload(true)
+            .limit(10000)
+    ).await?;
+
+    for point in visual.result {
+        let video_id = get_str(&point.payload, "video_id");
+        let video_name = get_str(&point.payload, "video_name");
+        let entry = map.entry(video_id.clone()).or_insert(VideoInfo {
+            video_id,
+            video_name,
+            audio_segments: 0,
+            visual_frames: 0,
+        });
+        entry.visual_frames += 1;
+    }
+
+    let mut videos: Vec<VideoInfo> = map.into_values().collect();
+    videos.sort_by(|a, b| a.video_name.cmp(&b.video_name));
+    Ok(videos)
 }
 
 // Helpers

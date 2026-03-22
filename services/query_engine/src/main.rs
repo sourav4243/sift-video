@@ -26,6 +26,17 @@ async fn main() -> anyhow::Result<()> {
     // Initialize DB
     let state = db::init().await?;
     let state_clone = state.clone();
+    let pipeline_running = Arc::new(AtomicBool::new(false));
+
+    tokio::fs::remove_file("/output/.trigger_ingest").await.ok();
+    tokio::fs::remove_file("/output/.trigger_embed").await.ok();
+    info!("Cleaned up stale trigger files");
+
+    match db::check_and_trigger_pipeline(&state_clone, Arc::clone(&pipeline_running)).await {
+        Ok(true) => info!("New videos detected on startup, pipeline triggered"),
+        Ok(false) => info!("All videos already indexed, skipping startup pipeline"),
+        Err(e) => warn!("Startup pipeline check failed: {}", e),
+    }
 
     info!("Ingesting embeddings from disk...");
     if let Err(e) = db::ingest_from_disk(&state_clone).await {
@@ -34,7 +45,6 @@ async fn main() -> anyhow::Result<()> {
         info!("Initial ingest complete");
     }
 
-    let pipeline_running = Arc::new(AtomicBool::new(false));
 
     tokio::spawn(async move {
         loop {
@@ -46,13 +56,13 @@ async fn main() -> anyhow::Result<()> {
                 continue;
             }
 
-            if let Err(e) = db::check_and_trigger_pipeline(&state_clone, Arc::clone(&pipeline_running)).await {
-                warn!("Pipeline check failed: {}", e);
-                pipeline_running.store(false, Ordering::SeqCst);
-            }
-
-            if let Err(e) = db::ingest_from_disk(&state_clone).await {
-                warn!("Ingest cycle failed: {}", e);
+            match db::check_and_trigger_pipeline(&state_clone, Arc::clone(&pipeline_running)).await {
+                Ok(true) => info!("Pipeline triggered, ingest will run after completion"),
+                Ok(false) => {},
+                Err(e) => {
+                    warn!("Pipeline check failed: {}", e);
+                    pipeline_running.store(false, Ordering::SeqCst);
+                }
             }
         }
     });
@@ -61,10 +71,11 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/search", post(api::search_handler))
         .route("/index", post(api::index_handler))
+        .route("/upload", post(api::upload_handler))
+        .route("/videos/list", get(api::video_list_handler))
         .route("/videos/*filename", get(api::video_handler))
-        .fallback_service(ServeDir::new("/app/static").fallback(
-            ServeFile::new("/app/static/index.html")
-        ))
+        .fallback_service(ServeDir::new("/app/static")
+            .fallback(ServeFile::new("/app/static/index.html")))
         .with_state(state);
 
     // Start server
