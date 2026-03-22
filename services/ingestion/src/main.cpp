@@ -6,6 +6,8 @@
 #include <vector>
 #include <cstdio>
 #include <algorithm>
+#include <thread>
+#include <chrono>
 
 namespace fs = std::filesystem;
 
@@ -72,14 +74,18 @@ void write_frames_metadata(const fs::path frames_dir, double interval_sec){
     out << "]\n";
 }
 
+bool already_processed(const fs::path& output_dir, const std::string& video_stem){
+    return fs::exists(output_dir / (video_stem + ".wav")) && fs::exists(output_dir / (video_stem + ".srt"));
+}
 
-int main() {
+
+void process_videos(){
     fs::path videos_dir = "/videos";
     fs::path output_dir = "/output";
 
     if(!fs::exists(videos_dir)){
         std::cerr << "Error: /videos directory not found" << std::endl;
-        return 1;
+        return;
     }
     
     std::vector<Segment>all_segments;
@@ -90,6 +96,12 @@ int main() {
         std::string video_path = entry.path().string();
         std::string video_stem = entry.path().stem().string();      // video
         std::string video_name = entry.path().filename().string();  // video.mp4
+
+        // skip already processed videos
+        if(already_processed(output_dir, video_stem)){
+            std::cout << "[Skip] Already processed: " << video_stem << std::endl;
+            continue;
+        }
 
         // Video to Frames
         fs::path frames_dir = output_dir / "frames" / video_stem;
@@ -196,5 +208,25 @@ int main() {
     out << "]\n";
 
     std::cout << "transcript.json generated" << std::endl;
+}
+
+
+int main() {
+    std::cout << "[Ingestion] Wsiting for trigger...\n";
+
+    const std::string trigger = "/output/.trigger_ingest";
+
+    while(true){
+        if(!fs::exists(trigger)){
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            continue;
+        }
+
+        std::cout << "[Ingestion] Trigger detected, processing...\n";
+        process_videos();
+
+        fs::remove(trigger);
+        std::cout << "[Ingestion] Done, trigger cleared\n";
+    }
     return 0;
 }

@@ -5,6 +5,8 @@
 #include <fstream>
 #include <filesystem>
 #include <unistd.h>
+#include <thread>
+#include <chrono>
 
 namespace fs = std::filesystem;
 
@@ -36,24 +38,7 @@ void save_embedding(const std::string& path, float* data, size_t size){
     out.write(reinterpret_cast<char*>(data), size* sizeof(float));
 }
 
-int main(){
-    // wait for ingestion to finish (signals by completion of writing transcripts.json)
-    fs::path signal_file = "/output/transcripts.json";
-    std::cout << "Waiting for ingestion to complete...\n";
-    while(!fs::exists(signal_file)){
-        sleep(5);
-    }
-    // extra seconds to finish writing frames
-    sleep(2);
-    std::cout << "Ingestion complete, starting embedding...\n";
-
-    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "clip");
-    Ort::SessionOptions opts;
-
-    Ort::Session session(env, "models/visual.onnx", opts);
-
-    Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-
+void process_embeddingss(Ort::Session& session, Ort::MemoryInfo& mem){
     std::vector<int64_t> image_shape = {1, 3, 256, 256};
     
     const char* input_names[] = {"pixel_values"};
@@ -75,6 +60,10 @@ int main(){
 
             std::string frame_path = frame.path().string();
             std::string frame_name = frame.path().stem().string();
+            std::string out_path = (out_dir / (frame_name + ".bin")).string();
+            
+            // skip already embedded videos
+            if(fs::exists(out_path)) continue;
 
             std::vector<float> image_tensor = preprocess(frame_path);
 
@@ -97,12 +86,39 @@ int main(){
             float* embed = outputs[0].GetTensorMutableData<float>();
             size_t embed_size = outputs[0].GetTensorTypeAndShapeInfo().GetElementCount();
 
-            std::string out_path = (out_dir / (frame_name + ".bin")).string();
 
             save_embedding(out_path, embed, embed_size);
 
             std::cout << "Embedded: " << frame_name << std::endl;
         }
     }
+    return;
+}
+
+int main(){
+    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "clip");
+    Ort::SessionOptions opts;
+    Ort::Session session(env, "models/visual.onnx", opts);
+    Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+
+    std::cout << "[Embedding] Waiting for trigger...\n";
+
+    const std::string trigger = "/output/.trigger_embed";
+
+    while(true){
+        if(!fs::exists(trigger)){
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            continue;
+        }
+
+        std::cout << "[Embedding] Trigger detected, processing...\n";
+
+        process_embeddingss(session, mem);
+
+        fs::remove(trigger);
+
+        std::cout << "[Embedding] Done, trigger cleared\n";
+    }
+    
     return 0;
 }
