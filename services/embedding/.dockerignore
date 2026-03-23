@@ -1,6 +1,2 @@
-# models/
-# *.onnx
-# *.data
-output/
-videos/
-.git
+models/
+embed

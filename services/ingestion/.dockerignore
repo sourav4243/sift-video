@@ -1,4 +1,2 @@
-# external/
-output/
-videos/
-# .git
+external/whisper/models/
+external/whisper/build/
