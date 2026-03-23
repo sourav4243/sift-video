@@ -12,6 +12,7 @@ services:
 
   # query engine
   query_engine:
+    image: meledo/sift-video-query-engine:latest
     build:
       context: ./services/query_engine
       dockerfile: Dockerfile
@@ -32,6 +33,7 @@ services:
   
   # ingestion service
   ingestion:
+    image: meledo/sift-video-ingestion:latest
     build:
       context: ./services/ingestion
       dockerfile: Dockerfile
@@ -45,6 +47,7 @@ services:
   
   # embedding service
   embedding:
+    image: meledo/sift-video-embedding:latest
     build:
       context: ./services/embedding
       dockerfile: Dockerfile

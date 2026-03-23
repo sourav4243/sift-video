@@ -6,7 +6,7 @@ mod db;
 mod api;
 
 use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
-use axum::{Router, routing::{get, post}};
+use axum::{Router, extract::DefaultBodyLimit, routing::{get, post}};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 use tower_http::services::{ServeDir, ServeFile};
@@ -74,6 +74,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/upload", post(api::upload_handler))
         .route("/videos/list", get(api::video_list_handler))
         .route("/videos/*filename", get(api::video_handler))
+        .layer(DefaultBodyLimit::max(1024 * 1024 * 1024))
         .fallback_service(ServeDir::new("/app/static")
             .fallback(ServeFile::new("/app/static/index.html")))
         .with_state(state);
