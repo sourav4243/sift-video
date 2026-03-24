@@ -55,7 +55,6 @@ services:
     restart: always
     volumes:
       - ./output:/output
-      - ./services/embedding/models:/app/models
     depends_on:
       - ingestion
 

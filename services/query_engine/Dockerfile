@@ -11,20 +11,25 @@ ENV PATH="/usr/local/cargo/bin:${PATH}"
 ENV RUSTUP_HOME="/usr/local/rustup"
 ENV CARGO_HOME="/usr/local/cargo"
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     gcc \
     g++ \
     pkg-config \
     libssl-dev \
     protobuf-compiler \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+RUN curl -L -f https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+    -o /app/yt-dlp && chmod +x /app/yt-dlp
 
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && \
     echo "fn main() {}" > src/main.rs && \
     cargo build --release && \
     rm -rf src
+
 COPY src ./src
 RUN touch src/main.rs && cargo build --release
 
@@ -32,17 +37,15 @@ RUN touch src/main.rs && cargo build --release
 FROM debian:trixie-slim
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
     libstdc++6 \
     python3 \
-    curl \
-    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
-        -o /usr/local/bin/yt-dlp \
-    && chmod +x /usr/local/bin/yt-dlp \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=builder /app/yt-dlp /usr/local/bin/yt-dlp
 COPY --from=builder /app/target/release/query_engine .
+
 EXPOSE 8080
 CMD ["./query_engine"]

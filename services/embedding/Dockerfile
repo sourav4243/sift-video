@@ -16,6 +16,10 @@ RUN wget https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnx
     mv onnxruntime-linux-x64-1.20.1 /onnxruntime && \
     rm onnxruntime-linux-x64-1.20.1.tgz
 
+RUN mkdir -p /app/models && \
+    wget -qO /app/models/visual.onnx "https://huggingface.co/RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX/resolve/main/visual.onnx" && \
+    wget -qO /app/models/visual.onnx.data "https://huggingface.co/RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX/resolve/main/visual.onnx.data"
+
 COPY src ./src
 RUN g++ src/main.cpp -o embed \
     -I/onnxruntime/include \
@@ -28,12 +32,14 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libopencv-core4.5d \
     libopencv-imgproc4.5d \
     libopencv-imgcodecs4.5d \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
+COPY --from=builder /app/models ./models
 COPY --from=builder /app/embed .
 COPY --from=builder /onnxruntime/lib /onnxruntime/lib
 

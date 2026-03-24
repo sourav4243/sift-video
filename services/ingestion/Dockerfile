@@ -13,25 +13,27 @@ RUN apt-get clean && \
 
 WORKDIR /app
 COPY external/whisper ./external/whisper
-RUN cd external/whisper && make
+
+RUN mkdir -p external/whisper/models && \
+    curl -L -f -o external/whisper/models/ggml-small.en.bin \
+    https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
+
+RUN cd external/whisper && \
+    cmake -B build -DBUILD_SHARED_LIBS=OFF && \
+    cmake --build build --config Release
+
 COPY src ./src
-RUN g++ src/main.cpp -o ingest
+RUN g++ src/main.cpp -o ingest -static-libstdc++ -static-libgcc
 
 # Runtime
 FROM ubuntu:22.04
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
-    libstdc++6 \
-    libgomp1 \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p external/whisper/models && \
-    curl -L -o external/whisper/models/ggml-small.en.bin \
-    https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
-
+COPY --from=builder /app/external/whisper/models/ggml-small.en.bin ./external/whisper/models/ggml-small.en.bin
 COPY --from=builder /app/ingest .
 COPY --from=builder /app/external/whisper/build/bin/whisper-cli \
                     ./external/whisper/build/bin/whisper-cli
