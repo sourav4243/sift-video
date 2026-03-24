@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::{collections::{HashMap, HashSet}, fs, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
 use tokio::{sync::Mutex, time::sleep};
-use qdrant_client::{Qdrant, qdrant::{Condition, CountPointsBuilder, CreateCollectionBuilder, Distance, Filter, PointStruct, SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder, value::Kind}};
+use qdrant_client::{Qdrant, qdrant::{Condition, CountPointsBuilder, CreateCollectionBuilder, Distance, Filter, PointStruct, ScrollPointsBuilder, SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder, value::Kind}};
 use tracing::{error, info, info_span, warn};
 use uuid::Uuid;
 use open_clip_inference::TextEmbedder;
@@ -346,13 +346,13 @@ async fn ingest_visual(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
 
             if path.extension().and_then(|e| e.to_str()) != Some("bin") { continue; }
             
-            // derive timestamp from filename: frame_0001 -> index 1 -> 1 * 2.0s
+            // derive timestamp from filename: frame_0001 -> index 1 -> 1 * 1.0s
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let frame_index = stem
                 .trim_start_matches("frame_")
                 .parse::<f64>()
                 .unwrap_or(0.0);
-            let timestamp = (frame_index - 1.0) * 2.0;
+            let timestamp = frame_index - 1.0;
 
             // read raw f32s
             let bytes = fs::read(&path)?;
@@ -373,7 +373,7 @@ async fn ingest_visual(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
                     video_id: video_id.clone(),
                     video_name: actual_filename.clone(),
                     start_time: timestamp,
-                    end_time: timestamp + 2.0,
+                    end_time: timestamp + 1.0,
                     modality: "visual".to_string(),
                     text_content: None,
                 },
@@ -518,9 +518,12 @@ pub async fn check_and_trigger_pipeline(state: &Arc<AppState>, pipeline_running:
 
 async fn trigger_pipeline() {
     use tokio::fs;
-    use tokio::time::sleep;
+
+    let total_start = Instant::now();
+
     // trigger ingestion
     info!("Triggering ingestion...");
+    let ingest_start = Instant::now();
     if let Err(e) = fs::write("/output/.trigger_ingest", b"1").await {
         warn!("Failed to write ingest trigger: {}", e);
         return;
@@ -534,10 +537,11 @@ async fn trigger_pipeline() {
             Ok(_) => info!("Waiting for ingestion to complete..."),
         }
     }
-    info!("Ingestion complete");
+    info!("Ingestion complete in {:.2?}", ingest_start.elapsed());
 
     // trigger embedding
     info!("Triggering embedding...");
+    let embed_start = Instant::now();
     if let Err(e) = fs::write("/output/.trigger_embed", b"1").await {
         warn!("Failed to write embed trigger: {}", e);
         return;
@@ -550,12 +554,11 @@ async fn trigger_pipeline() {
             Ok(_) => info!("Waiting for embedding to complete..."),
         }
     }
-    info!("Embedding complete");
+    info!("Embedding complete in {:.2?}", embed_start.elapsed());
+    info!("Full pipeline finished in {:.2?}", total_start.elapsed());
 }
 
 pub async fn list_indexed_videos(state: &Arc<AppState>) -> Result<Vec<VideoInfo>> {
-    use qdrant_client::qdrant::ScrollPointsBuilder;
-
     let mut map: HashMap<String, VideoInfo> = HashMap::new();
 
     // scroll audio collection
