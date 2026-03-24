@@ -1,11 +1,147 @@
 use std::sync::Arc;
-use axum::{Json, extract::State, http::{StatusCode, header, HeaderMap}, response::{IntoResponse, Response}};
+use axum::{Json, extract::{Path, State}, http::{HeaderMap, StatusCode, header}, response::{IntoResponse, Response}};
 use tokio::{fs::File, io::AsyncReadExt};
 use tokio_util::io::ReaderStream;
-use tracing::{info, error};
+use tracing::{info, error, debug};
 
 use crate::{db, models::{IndexRequest, IndexResponse, SearchRequest, SearchResponse, VideoListResponse}};
 use crate::db::{AppState, search_multimodal, upsert_embedding};
+
+#[derive(Debug, serde::Deserialize)]
+pub struct DownloadRequest {
+    pub url: String,
+}
+
+pub async fn download_handler(
+    Json(payload): Json<DownloadRequest>,
+) -> Response {
+    let url = payload.url.trim().to_string();
+
+    if url.is_empty() {
+        return (StatusCode::BAD_REQUEST, "url is required").into_response();
+    }
+
+    info!("yt-dlp download requested: {}", url);
+
+    let meta_output = match tokio::process::Command::new("yt-dlp")
+        .args(["--no-playlist", "--dump-json", &url])
+        .output()
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            error!("Failed to fetch metadata: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "metadata fetch failed").into_response();
+        }
+    };
+
+    if !meta_output.status.success() {
+        let err = String::from_utf8_lossy(&meta_output.stderr);
+        return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+    }
+
+    // parse JSON
+    let json: serde_json::Value = match serde_json::from_slice(&meta_output.stdout) {
+        Ok(j) => j,
+        Err(e) => {
+            error!("JSON parse failed: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "invalid metadata").into_response();
+        }
+    };
+
+    let title = json["title"].as_str().unwrap_or("unknown").to_string();
+    let duration = json["duration"].as_f64().unwrap_or(0.0);
+    let thumbnail = json["thumbnail"].as_str().unwrap_or("").to_string();
+
+    if let Err(e) = tokio::process::Command::new("yt-dlp")
+        .args([
+            "--no-playlist",
+            "-o", "/videos/%(title)s.%(ext)s",
+            "--remux-video", "mp4",
+            &url,
+        ])
+        .spawn()
+    {
+        error!("Failed to spawn yt-dlp: {}", e);
+        return (StatusCode::INTERNAL_SERVER_ERROR, "yt-dlp not found or failed to start").into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "title": title,
+            "duration": duration,
+            "thumbnail": thumbnail
+        }))
+    ).into_response()
+}
+
+pub async fn delete_video_handler(
+    State(state): State<Arc<AppState>>,
+    Path(filename): Path<String>,
+) -> Response {
+    let filename = filename.trim_start_matches('/');
+    let path = format!("/videos/{}", filename);
+
+    let video_id = std::path::Path::new(&filename)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    info!("Starting full cleanup for video: {}", filename);
+
+    // delete original video file
+    if let Err(e) = tokio::fs::remove_file(&path).await {
+        error!("Failed to delete file {}: {}", path, e);
+    }
+
+    // delete qdrant embeddings
+    if let Err(e) = db::delete_video_embeddings(&state.qdrant, &video_id).await {
+        error!("Failed to delete embeddings for {}: {}", video_id, e);
+    }
+
+    // scrub frames directory
+    let frames_dir = format!("/output/frames/{}", video_id);
+    if let Err(e) = tokio::fs::remove_dir(&frames_dir).await {
+        debug!("Skipped frames dir {} (may not exist): {}", frames_dir, e);
+    }
+
+    // scrub embeddings directory
+    let embeddings_dir = format!("/output/embeddings/{}", video_id);
+    if let Err(e) = tokio::fs::remove_dir(&embeddings_dir).await {
+        debug!("Skipped embeddings dir {} (may not exist): {}", embeddings_dir, e);
+    }
+
+    // scrub transcripts.json
+    let transcripts_path = "/output/transcripts.json";
+    if let Ok(contents) = tokio::fs::read_to_string(transcripts_path).await {
+        if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&contents) {
+            let mut modified = false;
+
+            if let Some(array) = json.as_array_mut() {
+                let initial_len = array.len();
+                // remove entries matching this video
+                array.retain(|item| {
+                    item.get("video_name").and_then(|v| v.as_str()) != Some(&filename) &&
+                    item.get("video_id").and_then(|v| v.as_str()) != Some(&video_id)
+                });
+                modified = array.len() != initial_len;
+            }
+
+            // write back to disk only if we actually removed something
+            if modified {
+                if let Ok(new_contents) = serde_json::to_string_pretty(&json) {
+                    let _ = tokio::fs::write(transcripts_path, new_contents).await;
+                    info!("Removed {} from transcripts.json", video_id);
+                }
+            }
+        }
+    }
+
+    info!("Cleanup completed for video: {}", filename);
+    StatusCode::OK.into_response()
+}
 
 pub async fn search_handler(
     State(state): State<Arc<AppState>>,
@@ -18,7 +154,7 @@ pub async fn search_handler(
     
     info!("Received query: {}", payload.query);
 
-    match search_multimodal(&state, payload.query, payload.video_id).await {
+    match search_multimodal(&state, payload.query, payload.video_id, payload.match_type).await {
         Ok(results) => {
             (StatusCode::OK, Json(SearchResponse { results })).into_response()
         }

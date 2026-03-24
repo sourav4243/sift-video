@@ -4,6 +4,7 @@ use serde::{Serialize, Deserialize};
 pub struct SearchRequest {
     pub query: String,
     pub video_id: Option<String>,
+    pub match_type: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]

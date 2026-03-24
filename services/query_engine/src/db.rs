@@ -1,6 +1,6 @@
 use anyhow::Result;
-use std::{collections::{HashMap, HashSet}, fs, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
-use tokio::time::sleep;
+use std::{collections::{HashMap, HashSet}, fs, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
+use tokio::{sync::Mutex, time::sleep};
 use qdrant_client::{Qdrant, qdrant::{Condition, CountPointsBuilder, CreateCollectionBuilder, Distance, Filter, PointStruct, SearchPointsBuilder, UpsertPointsBuilder, Value, VectorParamsBuilder, value::Kind}};
 use tracing::{error, info, info_span, warn};
 use uuid::Uuid;
@@ -13,11 +13,17 @@ const AUDIO_COLLECTION: &str = "audio_segments";
 const VISUAL_COLLECTION: &str = "visual_frames";
 const AUDIO_WEIGHT: f64 = 0.3;
 const VISUAL_WEIGHT: f64 = 0.7;
+const EMBEDDER_IDLE_SECS: u64 = 120;
+
+pub struct EmbedderSlot {
+    embedder: TextEmbedder,
+    last_used: Instant,
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub qdrant: Arc<Qdrant>,
-    pub embedder: Arc<TextEmbedder>,
+    pub embedder: Arc<Mutex<Option<EmbedderSlot>>>,
 }
 
 pub async fn init() -> Result<Arc<AppState>> {
@@ -56,15 +62,28 @@ pub async fn init() -> Result<Arc<AppState>> {
     ensure_collection(&client, AUDIO_COLLECTION).await?;
     ensure_collection(&client, VISUAL_COLLECTION).await?;
 
-    // load CLIP model
-    info!("Loading CLIP text embedder...");
-    let embedder = TextEmbedder::from_hf("RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX").build().await?;
-    info!("CLIP text embedder loaded");
-
-    Ok(Arc::new(AppState {
+    info!("Query engine ready");
+    let state = Arc::new(AppState {
         qdrant: Arc::new(client),
-        embedder: Arc::new(embedder),
-    }))
+        embedder: Arc::new(Mutex::new(None)),
+    });
+
+    let embedder_ref = Arc::clone(&state.embedder);
+    tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(30)).await;
+
+            let mut slot = embedder_ref.lock().await;
+            if let Some(ref s) = *slot {
+                if s.last_used.elapsed().as_secs() >= EMBEDDER_IDLE_SECS {
+                    *slot = None;
+                    info!("Embedder evicted after {}s idle, RAM released", EMBEDDER_IDLE_SECS);
+                }
+            }
+        }
+    });
+
+    Ok(state)
 }
 
 async fn ensure_collection(client: &Qdrant, name: &str) -> Result<()> {
@@ -83,9 +102,28 @@ pub async fn embed_query(state: &Arc<AppState>, query: &str) -> Result<Vec<f32>>
     let state = state.clone();
     let query = query.to_string();
     let row = tokio::task::spawn_blocking(move || {
-        let vector = state.embedder.embed_texts(&[query.as_str()])?;
+        let rt = tokio::runtime::Handle::current();
+        let mut slot = rt.block_on(state.embedder.lock());
+
+        if slot.is_none() {
+            info!("Loading CLIP text embedder (from blocking thread)...");
+            let embedder = rt.block_on(
+                TextEmbedder::from_hf("RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX").build()
+            )?;
+            info!("CLIP text embedder loaded");
+            *slot = Some(EmbedderSlot { embedder, last_used: Instant::now() });
+        } else if let Some(ref mut s) = *slot {
+            s.last_used = Instant::now();
+        }
+
+        let vector = slot
+            .as_ref()
+            .unwrap()
+            .embedder
+            .embed_texts(&[query.as_str()])?;
         Ok::<Vec<f32>, anyhow::Error>(vector.row(0).to_vec())
     }).await??;
+
     info!(dims = row.len(), "Query embedded");
     Ok(row)
 }
@@ -123,7 +161,7 @@ pub async fn upsert_embedding(client: &Qdrant, req: IndexRequest) -> Result<Stri
     Ok(collection.to_string())
 }
 
-pub async fn search_multimodal(state: &Arc<AppState>, query: String, video_id: Option<String>) -> Result<Vec<SearchResult>> {
+pub async fn search_multimodal(state: &Arc<AppState>, query: String, video_id: Option<String>, match_type: Option<String>) -> Result<Vec<SearchResult>> {
     info_span!("search_multimodal").in_scope(|| {
         info!(query = query.as_str(), "Starting multimodal search");
     });
@@ -224,7 +262,34 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String, video_id: O
 
     final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
 
+    if let Some(filter_type) = match_type {
+        if filter_type != "all" {
+            final_results.retain(|r| r.match_type.contains(&filter_type));
+        }
+    }
+
     Ok(final_results)
+}
+
+pub async fn delete_video_embeddings(
+    client: &Qdrant,
+    video_id: &str,
+) -> Result<()> {
+    let filter = Filter::must([
+        Condition::matches("video_id", video_id.to_string())
+    ]);
+
+    client.delete_points(
+        qdrant_client::qdrant::DeletePointsBuilder::new("audio_segments")
+            .points(filter.clone())
+    ).await?;
+
+    client.delete_points(
+        qdrant_client::qdrant::DeletePointsBuilder::new("visual_frames")
+            .points(filter)
+    ).await?;
+
+    Ok(())
 }
 
 pub async fn ingest_from_disk(state: &Arc<AppState>) -> Result<()> {

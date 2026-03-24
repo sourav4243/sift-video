@@ -36,6 +36,11 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     libstdc++6 \
+    python3 \
+    curl \
+    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+        -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/query_engine .

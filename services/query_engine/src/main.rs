@@ -72,8 +72,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/search", post(api::search_handler))
         .route("/index", post(api::index_handler))
         .route("/upload", post(api::upload_handler))
+        .route("/download", post(api::download_handler))
         .route("/videos/list", get(api::video_list_handler))
-        .route("/videos/*filename", get(api::video_handler))
+        .route(
+            "/videos/:filename",
+            get(api::video_handler).delete(api::delete_video_handler)
+        )
         .layer(DefaultBodyLimit::max(1024 * 1024 * 1024))
         .fallback_service(ServeDir::new("/app/static")
             .fallback(ServeFile::new("/app/static/index.html")))
