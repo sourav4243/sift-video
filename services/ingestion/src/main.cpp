@@ -109,15 +109,15 @@ void process_videos(){
 
         std::string frames_pattern = (frames_dir / "frame_%04d.jpg").string();
 
-        std::string ffmpeg_frames_cmd = "ffmpeg -y -i \"" + video_path + "\" -vf \"fps=1/2\" \"" + frames_pattern + "\"";
+        std::string ffmpeg_frames_cmd = "ffmpeg -y -i \"" + video_path + "\" -vf \"fps=1/1\" \"" + frames_pattern + "\"";
 
         if(system(ffmpeg_frames_cmd.c_str())!=0){
             std::cerr << "FFmpeg frame extraction failed for " << video_path << std::endl;
             continue;
         }
 
-        // Generate frame timestamps (fps = 1/2 -> 2 seconds)
-        write_frames_metadata(frames_dir, 2.0);
+        // Generate frame timestamps (fps = 1/1 -> 1 seconds)
+        write_frames_metadata(frames_dir, 1.0);
 
         // Video to Audio
         std::string audio_path = (output_dir / (video_stem + ".wav")).string();
