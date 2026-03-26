@@ -89,21 +89,20 @@ void process_embeddingss(Ort::Session& session, Ort::MemoryInfo& mem){
 
             save_embedding(out_path, embed, embed_size);
 
-            std::cout << "Embedded: " << frame_name << std::endl;
+            std::cout << "[Embedding] Embedded: " << frame_name << std::endl;
         }
     }
     return;
 }
 
 int main(){
+    const std::string trigger = "/output/.trigger_embed";
+    const std::string model_path = "models/visual.onnx";
+
+    // env is cheap (memory-wise): just a logging/thread context, can stay alive
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "clip");
-    Ort::SessionOptions opts;
-    Ort::Session session(env, "models/visual.onnx", opts);
-    Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 
     std::cout << "[Embedding] Waiting for trigger...\n";
-
-    const std::string trigger = "/output/.trigger_embed";
 
     while(true){
         if(!fs::exists(trigger)){
@@ -111,13 +110,28 @@ int main(){
             continue;
         }
 
-        std::cout << "[Embedding] Trigger detected, processing...\n";
+        std::cout << "[Embedding] Trigger detected, loading model...\n";
 
-        process_embeddingss(session, mem);
+        // session of model created here - memory allocated only if model is required (lazy loading)
+        {
+            Ort::SessionOptions opts;
+
+            // reduce internal thread pool of ONNX runtime, to save some RAM
+            opts.SetInterOpNumThreads(2);
+            opts.SetInterOpNumThreads(1);
+
+            Ort::Session session(env, model_path.c_str(), opts);
+            Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+            
+            std::cout << "[Embedding] Model loaded, processing...\n";
+            process_embeddingss(session, mem);
+
+            // session and mem out of scope here: destructor releases ~450MB of model memory
+        }
 
         fs::remove(trigger);
 
-        std::cout << "[Embedding] Done, trigger cleared\n";
+        std::cout << "[Embedding] Done, model unloaded, trigger cleared\n";
     }
     
     return 0;
