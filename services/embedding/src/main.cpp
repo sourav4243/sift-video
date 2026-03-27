@@ -120,6 +120,18 @@ int main(){
             opts.SetInterOpNumThreads(2);
             opts.SetInterOpNumThreads(1);
 
+            // GPU offload when compiled with -DUSE_CUDA=1
+            #ifdef USE_CUDA
+            {
+                OrtCUDAProviderOptions cuda_opts{};
+                cuda_opts.device_id = 0;
+                cuda_opts.arena_extend_strategy = 0;
+                cuda_opts.gpu_men_limit = 2ULL * 1024 * 1024 * 1024;    // 2GB VRAM cap
+                opts.AppendExecutionProvider_CUDA(cuda_opts);
+                std::cout << "[Embedding] CUDA execution provider enabled\n";
+            }
+            #endif
+
             Ort::Session session(env, model_path.c_str(), opts);
             Ort::MemoryInfo mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
             
