@@ -5,7 +5,7 @@ mod models;
 mod db;
 mod api;
 
-use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
+use std::{sync::{atomic::{Ordering}, Arc}, time::Duration};
 use axum::{Router, extract::DefaultBodyLimit, routing::{get, post}};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
@@ -26,13 +26,13 @@ async fn main() -> anyhow::Result<()> {
     // Initialize DB
     let state = db::init().await?;
     let state_clone = state.clone();
-    let pipeline_running = Arc::new(AtomicBool::new(false));
+    let state_task = state.clone();
 
     tokio::fs::remove_file("/output/.trigger_ingest").await.ok();
     tokio::fs::remove_file("/output/.trigger_embed").await.ok();
     info!("Cleaned up stale trigger files");
 
-    match db::check_and_trigger_pipeline(&state_clone, Arc::clone(&pipeline_running)).await {
+    match db::check_and_trigger_pipeline(&state_clone, Arc::clone(&state.pipeline_running)).await {
         Ok(true) => info!("New videos detected on startup, pipeline triggered"),
         Ok(false) => info!("All videos already indexed, skipping startup pipeline"),
         Err(e) => warn!("Startup pipeline check failed: {}", e),
@@ -51,17 +51,17 @@ async fn main() -> anyhow::Result<()> {
             tokio::time::sleep(Duration::from_secs(30)).await;
 
             // skip cycle if pipeline is already running
-            if pipeline_running.load(Ordering::SeqCst) {
+            if state_task.pipeline_running.load(Ordering::SeqCst) {
                 info!("Pipeline already running, skipping cycle");
                 continue;
             }
 
-            match db::check_and_trigger_pipeline(&state_clone, Arc::clone(&pipeline_running)).await {
+            match db::check_and_trigger_pipeline(&state_clone, Arc::clone(&state_task.pipeline_running)).await {
                 Ok(true) => info!("Pipeline triggered, ingest will run after completion"),
                 Ok(false) => {},
                 Err(e) => {
                     warn!("Pipeline check failed: {}", e);
-                    pipeline_running.store(false, Ordering::SeqCst);
+                    state_task.pipeline_running.store(false, Ordering::SeqCst);
                 }
             }
         }
@@ -73,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/index", post(api::index_handler))
         .route("/upload", post(api::upload_handler))
         .route("/download", post(api::download_handler))
+        .route("/health", get(api::health_handler))
         .route("/videos/list", get(api::video_list_handler))
         .route(
             "/videos/:filename",

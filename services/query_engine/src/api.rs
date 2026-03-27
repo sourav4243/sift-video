@@ -103,14 +103,22 @@ pub async fn delete_video_handler(
 
     // scrub frames directory
     let frames_dir = format!("/output/frames/{}", video_id);
-    if let Err(e) = tokio::fs::remove_dir(&frames_dir).await {
+    if let Err(e) = tokio::fs::remove_dir_all(&frames_dir).await {
         debug!("Skipped frames dir {} (may not exist): {}", frames_dir, e);
     }
 
     // scrub embeddings directory
     let embeddings_dir = format!("/output/embeddings/{}", video_id);
-    if let Err(e) = tokio::fs::remove_dir(&embeddings_dir).await {
+    if let Err(e) = tokio::fs::remove_dir_all(&embeddings_dir).await {
         debug!("Skipped embeddings dir {} (may not exist): {}", embeddings_dir, e);
+    }
+
+    // scrub wav/srt/txt/vtt files from /output
+    for ext in &["wav", "srt", "txt", "vtt"] {
+        let file_path = format!("/output/{}.{}", video_id, ext);
+        if let Err(e) = tokio::fs::remove_file(&file_path).await {
+            debug!("Skipped {} (may not exist): {}", file_path, e);
+        }
     }
 
     // scrub transcripts.json
@@ -327,4 +335,20 @@ pub async fn upload_handler(
     }
 
     StatusCode::OK.into_response()
+}
+
+pub async fn health_handler(
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    let qdrant_ok = state.qdrant.health_check().await.is_ok();
+    let pipeline_running = state.pipeline_running.load(std::sync::atomic::Ordering::SeqCst);
+
+    let status = if qdrant_ok { "ok" } else { "degraded" };
+    let code = if qdrant_ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
+
+    (code, Json(serde_json::json!({
+        "status": status,
+        "qdrant": qdrant_ok,
+        "pipeline_running": pipeline_running,
+    }))).into_response()
 }

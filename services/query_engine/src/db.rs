@@ -24,6 +24,7 @@ pub struct EmbedderSlot {
 pub struct AppState {
     pub qdrant: Arc<Qdrant>,
     pub embedder: Arc<Mutex<Option<EmbedderSlot>>>,
+    pub pipeline_running: Arc<AtomicBool>,
 }
 
 pub async fn init() -> Result<Arc<AppState>> {
@@ -66,6 +67,7 @@ pub async fn init() -> Result<Arc<AppState>> {
     let state = Arc::new(AppState {
         qdrant: Arc::new(client),
         embedder: Arc::new(Mutex::new(None)),
+        pipeline_running: Arc::new(AtomicBool::new(false)),
     });
 
     let embedder_ref = Arc::clone(&state.embedder);
