@@ -60,6 +60,7 @@ jobs:
           build-args: |
             USE_CUDA=1
             RUNTIME_BASE=nvidia/cuda:12.1.0-runtime-ubuntu22.04
+            RUNTIME_BASE=nvidia/cuda:12.1.0-runtime-ubuntu22.04
           cache-from: type==gha
           cache-to: type=gha,mode=max
 
@@ -84,6 +85,6 @@ jobs:
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-embedding:latest-gpu
           build-args: |
             USE_CUDA=1
-            RUNTIME_BASE=nvidia/cuda:13.1-runtime-ubuntu22.04
+            RUNTIME_BASE=nvidia/cuda:12.1.0-runtime-ubuntu22.04
           cache-from: type=gha
           cache-to: type=gha,mode=max

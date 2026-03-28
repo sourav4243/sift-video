@@ -1,7 +1,8 @@
 ARG RUNTIME_BASE=ubuntu:22.04
+ARG BUILDER_BASE=ubuntu:22.04
 # Build
 ARG USE_CUDA=0
-FROM ubuntu:22.04 AS builder
+FROM ${BUILDER_BASE} AS builder
 
 RUN apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
