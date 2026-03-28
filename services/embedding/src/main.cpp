@@ -117,7 +117,7 @@ int main(){
             Ort::SessionOptions opts;
 
             // reduce internal thread pool of ONNX runtime, to save some RAM
-            opts.SetInterOpNumThreads(2);
+            opts.SetIntraOpNumThreads(2);
             opts.SetInterOpNumThreads(1);
 
             // GPU offload when compiled with -DUSE_CUDA=1
@@ -126,7 +126,7 @@ int main(){
                 OrtCUDAProviderOptions cuda_opts{};
                 cuda_opts.device_id = 0;
                 cuda_opts.arena_extend_strategy = 0;
-                cuda_opts.gpu_men_limit = 2ULL * 1024 * 1024 * 1024;    // 2GB VRAM cap
+                cuda_opts.gpu_mem_limit = 2ULL * 1024 * 1024 * 1024;    // 2GB VRAM cap
                 opts.AppendExecutionProvider_CUDA(cuda_opts);
                 std::cout << "[Embedding] CUDA execution provider enabled\n";
             }
