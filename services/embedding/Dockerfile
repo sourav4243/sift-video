@@ -1,6 +1,8 @@
 ARG RUNTIME_BASE=ubuntu:22.04
+ARG BUILDER_BASE=ubuntu:22.04
+
 # Build
-FROM ubuntu:22.04 AS builder
+FROM ${BUILDER_BASE} AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
