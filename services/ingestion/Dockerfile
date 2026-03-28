@@ -1,4 +1,6 @@
+ARG RUNTIME_BASE=ubuntu:22.04
 # Build
+ARG USE_CUDA=0
 FROM ubuntu:22.04 AS builder
 
 RUN apt-get clean && \
@@ -18,15 +20,21 @@ RUN mkdir -p external/whisper/models && \
     curl -L -f -o external/whisper/models/ggml-small.en.bin \
     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
 
+
+ARG USE_CUDA=0
 RUN cd external/whisper && \
-    cmake -B build -DBUILD_SHARED_LIBS=OFF && \
-    cmake --build build --config Release
+    if [ "$USE_CUDA" = "1" ]; then \
+        cmake -B build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=ON; \
+    else \
+        cmake -B build -DBUILD_SHARED_LIBS=OFF; \
+    fi && \
+    cmake --build build --config Release --parallel $(nproc)
 
 COPY src ./src
 RUN g++ src/main.cpp -o ingest -static-libstdc++ -static-libgcc
 
 # Runtime
-FROM ubuntu:22.04
+FROM ${RUNTIME_BASE}
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

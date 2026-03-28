@@ -1,0 +1,78 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: sift_qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+    restart: always
+
+  query_engine:
+    image: meledo/sift-video-query-engine:latest
+    build:
+      context: ./services/query_engine
+      dockerfile: Dockerfile
+    container_name: sift_query_engine
+    ports:
+      - "8080:8080"
+    environment:
+      - RUST_LOG=info
+      - QDRANT_URL=http://qdrant:6334
+      - OUTPUT_DIR=/output
+    volumes:
+      - ./output:/output
+      - ./videos:/videos
+      - huggingface_cache:/root/.cache/huggingface
+      - ./ui:/app/static
+    depends_on:
+      - qdrant
+
+  ingestion:
+    image: meledo/sift-video-ingestion:latest-gpu
+    build:
+      context: ./services/ingestion
+      dockerfile: Dockerfile
+      args:
+        USE_CUDA: "1"
+        RUNTIME_BASE: nvidia/cuda:13.1-runtime-ubuntu22.04
+    container_name: sift_ingestion
+    restart: always
+    volumes:
+      - ./videos:/videos
+      - ./output:/output
+    depends_on:
+      - qdrant
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  embedding:
+    image: meledo/sift-video-embedding:latest-gpu
+    build:
+      context: ./services/embedding
+      dockerfile: Dockerfile
+      args:
+        USE_CUDA: "1"
+        RUNTIME_BASE: nvidia/cuda:13.1-runtime-ubuntu22.04
+    container_name: sift_embedding
+    restart: always
+    volumes:
+      - ./output:/output
+    depends_on:
+      - ingestion
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  huggingface_cache:

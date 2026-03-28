@@ -38,7 +38,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build and push ingestion
+      # Ingestion CPU
+      - name: Build and push ingestion (CPU)
         uses: docker/build-push-action@v6
         with:
           context: ./services/ingestion
@@ -47,13 +48,42 @@ jobs:
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-ingestion:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      
+      # Ingestion GPU
+      - name: Build and push ingestion (GPU)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/ingestion
+          file: ./services/ingestion/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-ingestion:latest-gpu
+          build-args: |
+            USE_CUDA=1
+            RUNTIME_BASE=nvidia/cuda:12.1.0-runtime-ubuntu22.04
+          cache-from: type==gha
+          cache-to: type=gha,mode=max
 
-      - name: Build and push embedding
+      # Embedding CPU
+      - name: Build and push embedding (CPU)
         uses: docker/build-push-action@v6
         with:
           context: ./services/embedding
           file: ./services/embedding/Dockerfile
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-embedding:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Embedding GPU
+      - name: Build and push embedding (GPU)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/embedding
+          file: ./services/embedding/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-embedding:latest-gpu
+          build-args: |
+            USE_CUDA=1
+            RUNTIME_BASE=nvidia/cuda:13.1-runtime-ubuntu22.04
           cache-from: type=gha
           cache-to: type=gha,mode=max
