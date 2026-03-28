@@ -53,17 +53,28 @@ pub async fn download_handler(
     let duration = json["duration"].as_f64().unwrap_or(0.0);
     let thumbnail = json["thumbnail"].as_str().unwrap_or("").to_string();
 
-    if let Err(e) = tokio::process::Command::new("yt-dlp")
+    // await download
+    let download = tokio::process::Command::new("yt-dlp")
         .args([
             "--no-playlist",
             "-o", "/videos/%(title)s.%(ext)s",
             "--remux-video", "mp4",
             &url,
         ])
-        .spawn()
-    {
-        error!("Failed to spawn yt-dlp: {}", e);
-        return (StatusCode::INTERNAL_SERVER_ERROR, "yt-dlp not found or failed to start").into_response();
+        .output()
+        .await;
+
+    match download {
+        Err(e) => {
+            error!("yt-dlp failed to run: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "yt-dlp failed").into_response();
+        }
+        Ok(out) if !out.status.success() => {
+            let err = String::from_utf8_lossy(&out.stderr);
+            error!("yt-dlp exited with error: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+        }
+        _ => {}
     }
 
     (

@@ -42,6 +42,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     libstdc++6 \
     python3 \
+    ffmpeg \
+    nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/yt-dlp /usr/local/bin/yt-dlp
