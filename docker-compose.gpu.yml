@@ -31,12 +31,6 @@ services:
 
   ingestion:
     image: meledo/sift-video-ingestion:latest-gpu
-    build:
-      context: ./services/ingestion
-      dockerfile: Dockerfile
-      args:
-        USE_CUDA: "1"
-        RUNTIME_BASE: nvidia/cuda:13.1-runtime-ubuntu22.04
     container_name: sift_ingestion
     restart: always
     volumes:
@@ -54,12 +48,6 @@ services:
 
   embedding:
     image: meledo/sift-video-embedding:latest-gpu
-    build:
-      context: ./services/embedding
-      dockerfile: Dockerfile
-      args:
-        USE_CUDA: "1"
-        RUNTIME_BASE: nvidia/cuda:13.1-runtime-ubuntu22.04
     container_name: sift_embedding
     restart: always
     volumes:

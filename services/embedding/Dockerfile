@@ -1,6 +1,8 @@
 ARG RUNTIME_BASE=ubuntu:22.04
+ARG BUILDER_BASE=ubuntu:22.04
+
 # Build
-FROM ubuntu:22.04 AS builder
+FROM ${BUILDER_BASE} AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
@@ -18,7 +20,7 @@ RUN if [ "$USE_CUDA" = "1" ]; then \
         wget https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-gpu-1.20.1.tgz && \
         tar -xzf onnxruntime-linux-x64-gpu-1.20.1.tgz && \
         mv onnxruntime-linux-x64-gpu-1.20.1 /onnxruntime && \
-        rm onnxruntime-linux-x64-gpu-1.20.1.tgz \
+        rm onnxruntime-linux-x64-gpu-1.20.1.tgz; \
     else \
         wget https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-1.20.1.tgz && \
         tar -xzf onnxruntime-linux-x64-1.20.1.tgz && \
