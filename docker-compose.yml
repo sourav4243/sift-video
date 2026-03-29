@@ -1,5 +1,4 @@
 services:
-  # vector db
   qdrant:
     image: qdrant/qdrant:latest
     container_name: sift_qdrant
@@ -10,7 +9,6 @@ services:
       - ./qdrant_storage:/qdrant/storage
     restart: always
 
-  # query engine
   query_engine:
     image: meledo/sift-video-query-engine:latest
     build:
@@ -36,8 +34,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
-  
-  # ingestion service
+
   ingestion:
     image: meledo/sift-video-ingestion:latest
     build:
@@ -50,8 +47,7 @@ services:
       - ./output:/output
     depends_on:
       - qdrant
-  
-  # embedding service
+
   embedding:
     image: meledo/sift-video-embedding:latest
     build:
@@ -62,7 +58,8 @@ services:
     volumes:
       - ./output:/output
     depends_on:
-      - ingestion
+      ingestion:
+        condition: service_started
 
 volumes:
   huggingface_cache:

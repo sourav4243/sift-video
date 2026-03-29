@@ -28,9 +28,22 @@ services:
       - ./ui:/app/static
     depends_on:
       - qdrant
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   ingestion:
     image: meledo/sift-video-ingestion:latest-gpu
+    build:
+      context: ./services/ingestion
+      dockerfile: Dockerfile
+      args:
+        USE_CUDA: "1"
+        BUILDER_BASE: nvidia/cuda:13.2.0-devel-ubuntu24.04
+        RUNTIME_BASE: nvidia/cuda:13.2.0-runtime-ubuntu24.04
     container_name: sift_ingestion
     restart: always
     volumes:
@@ -48,12 +61,20 @@ services:
 
   embedding:
     image: meledo/sift-video-embedding:latest-gpu
+    build:
+      context: ./services/embedding
+      dockerfile: Dockerfile
+      args:
+        USE_CUDA: "1"
+        BUILDER_BASE: nvidia/cuda:13.2.0-devel-ubuntu24.04
+        RUNTIME_BASE: nvidia/cuda:13.2.0-cudnn-runtime-ubuntu24.04
     container_name: sift_embedding
     restart: always
     volumes:
       - ./output:/output
     depends_on:
-      - ingestion
+      ingestion:
+        condition: service_started
     deploy:
       resources:
         reservations:

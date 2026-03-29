@@ -12,80 +12,126 @@ on:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: query_engine
+            image: sift-video-query-engine
+            tag: latest
+            scope: query-engine
+
+          - service: ingestion
+            image: sift-video-ingestion
+            tag: latest
+            scope: ingestion-cpu
+
+          - service: ingestion
+            image: sift-video-ingestion
+            tag: latest-gpu
+            scope: ingestion-gpu
+            build-args: |
+              USE_CUDA=1
+              BUILDER_BASE=nvidia/cuda:13.2.0-devel-ubuntu24.04
+              RUNTIME_BASE=nvidia/cuda:13.2.0-runtime-ubuntu24.04
+
+          - service: embedding
+            image: sift-video-embedding
+            tag: latest
+            scope: embedding-cpu
+
+          - service: embedding
+            image: sift-video-embedding
+            tag: latest-gpu
+            scope: embedding-gpu
+            build-args: |
+              USE_CUDA=1
+              BUILDER_BASE=nvidia/cuda:13.2.0-devel-ubuntu24.04
+              RUNTIME_BASE=nvidia/cuda:13.2.0-cudnn-runtime-ubuntu24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
-      
+
+      - name: Get changed files
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            query_engine:
+              - 'services/query_engine/**'
+            ingestion:
+              - 'services/ingestion/**'
+            embedding:
+              - 'services/embedding/**'
+
+      - name: Login to Docker Hub
+        if: steps.changes.outputs[matrix.service] == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        if: steps.changes.outputs[matrix.service] == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract git metadata
+        if: steps.changes.outputs[matrix.service] == 'true'
+        id: meta
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build and push ${{ matrix.image }}:${{ matrix.tag }}
+        if: steps.changes.outputs[matrix.service] == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/${{ matrix.service }}
+          file: ./services/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ matrix.tag }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ matrix.tag }}-${{ steps.meta.outputs.sha_short }}
+          build-args: ${{ matrix.build-args }}
+          cache-from: type=gha,scope=${{ matrix.scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.scope }}
+
+  verify:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      
-      - name: Build and push query engine
-        uses: docker/build-push-action@v6
-        with:
-          context: ./services/query_engine
-          file: ./services/query_engine/Dockerfile
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-query-engine:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
-      # Ingestion CPU
-      - name: Build and push ingestion (CPU)
-        uses: docker/build-push-action@v6
-        with:
-          context: ./services/ingestion
-          file: ./services/ingestion/Dockerfile
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-ingestion:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      
-      # Ingestion GPU
-      - name: Build and push ingestion (GPU)
-        uses: docker/build-push-action@v6
-        with:
-          context: ./services/ingestion
-          file: ./services/ingestion/Dockerfile
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-ingestion:latest-gpu
-          build-args: |
-            USE_CUDA=1
-            BUILDER_BASE=nvidia/cuda:12.1.0-devel-ubuntu22.04
-            RUNTIME_BASE=nvidia/cuda:12.1.0-runtime-ubuntu22.04
-          cache-from: type==gha
-          cache-to: type=gha,mode=max
+      - name: Verify GPU images
+        run: |
+          echo "=== Verifying ingestion GPU ==="
+          docker run --rm \
+            ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-ingestion:latest-gpu \
+            sh -c "ls /usr/local/cuda/lib64/libcudart* && echo 'CUDA runtime OK'"
 
-      # Embedding CPU
-      - name: Build and push embedding (CPU)
-        uses: docker/build-push-action@v6
-        with:
-          context: ./services/embedding
-          file: ./services/embedding/Dockerfile
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-embedding:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          echo "=== Verifying whisper CUDA linkage ==="
+          docker run --rm \
+            ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-ingestion:latest-gpu \
+            sh -c "ldd ./external/whisper/build/bin/whisper-cli | grep -i cuda \
+              && echo 'whisper linked against CUDA' \
+              || echo 'WARNING: whisper not linked against CUDA'"
 
-      # Embedding GPU
-      - name: Build and push embedding (GPU)
-        uses: docker/build-push-action@v6
-        with:
-          context: ./services/embedding
-          file: ./services/embedding/Dockerfile
-          push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-embedding:latest-gpu
-          build-args: |
-            USE_CUDA=1
-            BUILDER_BASE=nvidia/cuda:12.1.0-devel-ubuntu22.04
-            RUNTIME_BASE=nvidia/cuda:12.1.0-runtime-ubuntu22.04
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          echo "=== Verifying embedding GPU ==="
+          docker run --rm \
+            ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-embedding:latest-gpu \
+            sh -c "ls /usr/local/cuda/lib64/libcudart* \
+              && ls /onnxruntime/lib/libonnxruntime* \
+              && echo 'ONNX + CUDA OK'"
+
+          echo "=== Verifying ONNX CUDA EP ==="
+          docker run --rm \
+            ${{ secrets.DOCKERHUB_USERNAME }}/sift-video-embedding:latest-gpu \
+            sh -c "grep -a 'CUDAExecutionProvider' ./embed \
+              && echo 'CUDA EP present' \
+              || echo 'WARNING: CUDA EP not found'"
