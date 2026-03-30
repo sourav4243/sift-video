@@ -1,12 +1,11 @@
-ARG RUNTIME_BASE=ubuntu:22.04
-ARG BUILDER_BASE=ubuntu:22.04
+ARG RUNTIME_BASE=ubuntu:24.04
+ARG BUILDER_BASE=ubuntu:24.04
 
-# Build
 FROM ${BUILDER_BASE} AS builder
-ENV DEBIAN_FRONTEND=noninteractive
-WORKDIR /app
 
 ARG USE_CUDA=0
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -17,20 +16,29 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if [ "$USE_CUDA" = "1" ]; then \
-        wget https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-gpu-1.20.1.tgz && \
-        tar -xzf onnxruntime-linux-x64-gpu-1.20.1.tgz && \
-        mv onnxruntime-linux-x64-gpu-1.20.1 /onnxruntime && \
-        rm onnxruntime-linux-x64-gpu-1.20.1.tgz; \
+        wget https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-gpu_cuda13-1.24.4.tgz && \
+        tar -xzf onnxruntime-linux-x64-gpu_cuda13-1.24.4.tgz && \
+        mv onnxruntime-linux-x64-gpu-1.24.4 /onnxruntime && \
+        rm onnxruntime-linux-x64-gpu_cuda13-1.24.4.tgz; \
     else \
-        wget https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-linux-x64-1.20.1.tgz && \
-        tar -xzf onnxruntime-linux-x64-1.20.1.tgz && \
-        mv onnxruntime-linux-x64-1.20.1 /onnxruntime && \
-        rm onnxruntime-linux-x64-1.20.1.tgz; \
+        wget https://github.com/microsoft/onnxruntime/releases/download/v1.24.4/onnxruntime-linux-x64-1.24.4.tgz && \
+        tar -xzf onnxruntime-linux-x64-1.24.4.tgz && \
+        mv onnxruntime-linux-x64-1.24.4 /onnxruntime && \
+        rm onnxruntime-linux-x64-1.24.4.tgz; \
     fi
 
-RUN mkdir -p /app/models && \
-    wget -qO /app/models/visual.onnx "https://huggingface.co/RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX/resolve/main/visual.onnx" && \
-    wget -qO /app/models/visual.onnx.data "https://huggingface.co/RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX/resolve/main/visual.onnx.data"
+WORKDIR /app
+
+RUN --mount=type=cache,target=/model-cache \
+    mkdir -p /app/models && \
+    if [ ! -f /model-cache/visual.onnx ]; then \
+        wget -qO /model-cache/visual.onnx \
+            "https://huggingface.co/RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX/resolve/main/visual.onnx" && \
+        wget -qO /model-cache/visual.onnx.data \
+            "https://huggingface.co/RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX/resolve/main/visual.onnx.data"; \
+    fi && \
+    cp /model-cache/visual.onnx /app/models/visual.onnx && \
+    cp /model-cache/visual.onnx.data /app/models/visual.onnx.data
 
 COPY src ./src
 RUN if [ "$USE_CUDA" = "1" ]; then \
@@ -39,13 +47,15 @@ RUN if [ "$USE_CUDA" = "1" ]; then \
             -I/onnxruntime/include \
             -L/onnxruntime/lib \
             -lonnxruntime \
-            `pkg-config --cflags --libs opencv4`; \
+            `pkg-config --cflags --libs opencv4` \
+            -O2; \
     else \
         g++ src/main.cpp -o embed \
             -I/onnxruntime/include \
             -L/onnxruntime/lib \
             -lonnxruntime \
-            `pkg-config --cflags --libs opencv4`; \
+            `pkg-config --cflags --libs opencv4` \
+            -O2; \
     fi
 
 # Runtime
@@ -54,9 +64,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libopencv-core4.5d \
-    libopencv-imgproc4.5d \
-    libopencv-imgcodecs4.5d \
+    libopencv-core406t64 \
+    libopencv-imgproc406t64 \
+    libopencv-imgcodecs406t64 \
+    libopencv-dnn406t64 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
