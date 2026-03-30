@@ -93,7 +93,6 @@ pub async fn delete_video_handler(
 ) -> Response {
     let filename = filename.trim_start_matches('/');
     let path = format!("/videos/{}", filename);
-
     let video_id = std::path::Path::new(&filename)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -132,6 +131,11 @@ pub async fn delete_video_handler(
         }
     }
 
+    let marker = format!("/output/.indexed_{}", video_id);
+    if let Err(e) = tokio::fs::remove_file(&marker).await {
+        debug!("No marker file to delete for {}: {}", video_id, e);
+    }
+
     // scrub transcripts.json
     let transcripts_path = "/output/transcripts.json";
     if let Ok(contents) = tokio::fs::read_to_string(transcripts_path).await {
@@ -140,20 +144,61 @@ pub async fn delete_video_handler(
 
             if let Some(array) = json.as_array_mut() {
                 let initial_len = array.len();
-                // remove entries matching this video
+
+                info!("Before delete: {} segments in transcripts.json", initial_len);
+                info!("Trying to match: filename='{}' video_id='{}'", filename, video_id);
+
+                // log first few entries to see what's actually stored
+                for item in array.iter().take(5) {
+                    info!(
+                        "Sample entry — video_name={:?} video_id={:?}",
+                        item.get("video_name").and_then(|v| v.as_str()),
+                        item.get("video_id").and_then(|v| v.as_str())
+                    );
+                }
+
                 array.retain(|item| {
-                    item.get("video_name").and_then(|v| v.as_str()) != Some(&filename) &&
-                    item.get("video_id").and_then(|v| v.as_str()) != Some(&video_id)
+                    let name_match = item
+                        .get("video_name")
+                        .and_then(|v| v.as_str())
+                        .map(|n| n == filename)
+                        .unwrap_or(false);
+
+                    let id_match = item
+                        .get("video_id")
+                        .and_then(|v| v.as_str())
+                        .map(|id| id == video_id)
+                        .unwrap_or(false);
+
+                    if name_match || id_match {
+                        info!(
+                            "Dropping segment: video_name={:?} video_id={:?} name_match={} id_match={}",
+                            item.get("video_name").and_then(|v| v.as_str()),
+                            item.get("video_id").and_then(|v| v.as_str()),
+                            name_match,
+                            id_match
+                        );
+                    }
+
+                    !name_match && !id_match
                 });
+
+                info!(
+                    "After delete: {} segments remain (removed {})",
+                    array.len(),
+                    initial_len - array.len()
+                );
+
                 modified = array.len() != initial_len;
             }
 
-            // write back to disk only if we actually removed something
             if modified {
                 if let Ok(new_contents) = serde_json::to_string_pretty(&json) {
                     let _ = tokio::fs::write(transcripts_path, new_contents).await;
                     info!("Removed {} from transcripts.json", video_id);
                 }
+            } else {
+                info!("No segments matched for deletion in transcripts.json");
             }
         }
     }

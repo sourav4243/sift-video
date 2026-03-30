@@ -39,22 +39,15 @@ pub async fn init() -> Result<Arc<AppState>> {
         match Qdrant::from_url(&qdrant_url).build() {
             Ok(c) => {
                 match c.health_check().await {
-                    Ok(_) => {
-                        info!("Successfully connected to Qdrant!");
-                        break c;
-                    },
-                    Err(e) => {
-                        warn!("Qdrant not ready yet: {}", e);
-                    }
+                    Ok(_) => { info!("Successfully connected to Qdrant!"); break c; }
+                    Err(e) => warn!("Qdrant not ready yet: {}", e),
                 }
-            },
+            }
             Err(e) => error!("Failed to build client: {}", e),
         }
-
         if retries == 0 {
             anyhow::bail!("Could not connect to Qdrant after multiple retries");
         }
-
         println!("Waiting for Qdrant to start... ({} retries left)", retries);
         sleep(Duration::from_secs(3)).await;
         retries -= 1;
@@ -74,7 +67,6 @@ pub async fn init() -> Result<Arc<AppState>> {
     tokio::spawn(async move {
         loop {
             sleep(Duration::from_secs(30)).await;
-
             let mut slot = embedder_ref.lock().await;
             if let Some(ref s) = *slot {
                 if s.last_used.elapsed().as_secs() >= EMBEDDER_IDLE_SECS {
@@ -91,7 +83,6 @@ pub async fn init() -> Result<Arc<AppState>> {
 async fn ensure_collection(client: &Qdrant, name: &str) -> Result<()> {
     if !client.collection_exists(name).await? {
         info!("Creating collection: {}", name);
-
         client.create_collection(
             CreateCollectionBuilder::new(name)
                 .vectors_config(VectorParamsBuilder::new(VECTOR_SIZE, Distance::Cosine))
@@ -108,7 +99,7 @@ pub async fn embed_query(state: &Arc<AppState>, query: &str) -> Result<Vec<f32>>
         let mut slot = rt.block_on(state.embedder.lock());
 
         if slot.is_none() {
-            info!("Loading CLIP text embedder (from blocking thread)...");
+            info!("Loading CLIP text embedder...");
             let embedder = rt.block_on(
                 TextEmbedder::from_hf("RuteNL/MobileCLIP2-S3-OpenCLIP-ONNX").build()
             )?;
@@ -118,11 +109,7 @@ pub async fn embed_query(state: &Arc<AppState>, query: &str) -> Result<Vec<f32>>
             s.last_used = Instant::now();
         }
 
-        let vector = slot
-            .as_ref()
-            .unwrap()
-            .embedder
-            .embed_texts(&[query.as_str()])?;
+        let vector = slot.as_ref().unwrap().embedder.embed_texts(&[query.as_str()])?;
         Ok::<Vec<f32>, anyhow::Error>(vector.row(0).to_vec())
     }).await??;
 
@@ -134,43 +121,40 @@ pub async fn upsert_embedding(client: &Qdrant, req: IndexRequest) -> Result<Stri
     let collection = match req.metadata.modality.as_str() {
         "audio" => AUDIO_COLLECTION,
         "visual" => VISUAL_COLLECTION,
-        other => anyhow::bail!("Unknown modality: '{}'. Expected 'audio' or 'visual'.", other),
+        other => anyhow::bail!("Unknown modality: '{}'", other),
     };
 
     // build the payload
     let mut payload: HashMap<String, Value> = HashMap::new();
-
     payload.insert("video_id".to_string(), string_val(&req.metadata.video_id));
     payload.insert("video_name".to_string(), string_val(&req.metadata.video_name));
     payload.insert("start_time".to_string(), double_val(req.metadata.start_time));
     payload.insert("end_time".to_string(), double_val(req.metadata.end_time));
     payload.insert("modality".to_string(), string_val(&req.metadata.modality));
-
-    // text_content is audio-only but store it if present
     if let Some(ref text) = req.metadata.text_content {
         payload.insert("text_content".to_string(), string_val(text));
     }
 
     let point = PointStruct::new(req.id.clone(), req.vector, payload);
-
-    client.upsert_points(
-        UpsertPointsBuilder::new(collection, vec![point])
-    ).await?;
-
+    client.upsert_points(UpsertPointsBuilder::new(collection, vec![point])).await?;
     info!("Indexed [{}] id={} video={} t={:.2}s",
-    collection, req.id, req.metadata.video_id, req.metadata.start_time);
+        collection, req.id, req.metadata.video_id, req.metadata.start_time);
 
     Ok(collection.to_string())
 }
 
-pub async fn search_multimodal(state: &Arc<AppState>, query: String, video_id: Option<String>, match_type: Option<String>) -> Result<Vec<SearchResult>> {
+pub async fn search_multimodal(
+    state: &Arc<AppState>,
+    query: String,
+    video_id: Option<String>,
+    match_type: Option<String>,
+) -> Result<Vec<SearchResult>> {
     info_span!("search_multimodal").in_scope(|| {
         info!(query = query.as_str(), "Starting multimodal search");
     });
 
     let query_vector = embed_query(state, &query).await?;
 
-    // build optional filter
     let filter = video_id.as_ref().map(|id| {
         Filter::must([Condition::matches("video_id", id.clone())])
     });
@@ -178,16 +162,12 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String, video_id: O
     // Search Audio
     let mut audio_builder = SearchPointsBuilder::new(AUDIO_COLLECTION, query_vector.clone(), 5)
         .with_payload(true);
-    if let Some(ref f) = filter {
-        audio_builder = audio_builder.filter(f.clone());
-    }
+    if let Some(ref f) = filter { audio_builder = audio_builder.filter(f.clone()); }
 
     // Search Visual
     let mut visual_builder = SearchPointsBuilder::new(VISUAL_COLLECTION, query_vector, 5)
         .with_payload(true);
-    if let Some(ref f) = filter {
-        visual_builder = visual_builder.filter(f.clone());
-    }
+    if let Some(ref f) = filter { visual_builder = visual_builder.filter(f.clone()); }
 
     // Run parallel
     let (audio_results, visual_results) = tokio::join!(
@@ -235,7 +215,6 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String, video_id: O
 
     for audio in audio_hits {
         let mut merged_score = audio.score;
-
         for (i, visual) in visual_hits.iter().enumerate() {
             if visual.video_id == audio.video_id
                 && (visual.timestamp - audio.timestamp).abs() <= MERGE_WINDOW
@@ -244,7 +223,6 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String, video_id: O
                 matched_visual[i] = true;
             }
         }
-
         final_results.push(SearchResult {
             score: merged_score,
             match_type: if merged_score > audio.score {
@@ -255,11 +233,9 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String, video_id: O
             ..audio.clone()
         });
     }
-    
+
     for (i, visual) in visual_hits.into_iter().enumerate() {
-        if !matched_visual[i] {
-            final_results.push(visual);
-        }
+        if !matched_visual[i] { final_results.push(visual); }
     }
 
     final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
@@ -273,34 +249,24 @@ pub async fn search_multimodal(state: &Arc<AppState>, query: String, video_id: O
     Ok(final_results)
 }
 
-pub async fn delete_video_embeddings(
-    client: &Qdrant,
-    video_id: &str,
-) -> Result<()> {
-    let filter = Filter::must([
-        Condition::matches("video_id", video_id.to_string())
-    ]);
-
+pub async fn delete_video_embeddings(client: &Qdrant, video_id: &str) -> Result<()> {
+    let filter = Filter::must([Condition::matches("video_id", video_id.to_string())]);
     client.delete_points(
         qdrant_client::qdrant::DeletePointsBuilder::new("audio_segments")
             .points(filter.clone())
     ).await?;
-
     client.delete_points(
         qdrant_client::qdrant::DeletePointsBuilder::new("visual_frames")
             .points(filter)
     ).await?;
-
     Ok(())
 }
 
 pub async fn ingest_from_disk(state: &Arc<AppState>) -> Result<()> {
     let output_dir = std::env::var("OUTPUT_DIR")
         .unwrap_or_else(|_| "/output".to_string());
-
     ingest_visual(state, &output_dir).await?;
     ingest_audio(state, &output_dir).await?;
-
     Ok(())
 }
 
@@ -308,7 +274,7 @@ async fn ingest_visual(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
     let embed_root = std::path::Path::new(output_dir).join("embeddings");
 
     if !embed_root.exists() {
-        warn!("No embeddings directory found at {:?}, skipping visual ingest", embed_root);
+        warn!("No embeddings directory found, skipping visual ingest");
         return Ok(());
     }
 
@@ -321,6 +287,10 @@ async fn ingest_visual(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
 
         if is_video_indexed(&state.qdrant, VISUAL_COLLECTION, &video_id).await {
             info!("Skipping already-indexed frames for {}", video_id);
+            // clean up embeddings dir if it still exists from a previous partial run
+            if let Err(e) = fs::remove_dir_all(video_dir.path()) {
+                warn!("Could not remove stale embeddings dir: {}", e);
+            }
             continue;
         }
 
@@ -338,25 +308,22 @@ async fn ingest_visual(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
                 })
             })
             .unwrap_or_else(|| {
-                warn!("Could not find video file for stem '{}', failling back to .mp4", video_name);
+                warn!("Could not find video file for '{}', falling back to .mp4", video_name);
                 format!("{}.mp4", video_name)
             });
+
+        let mut upserted = 0usize;
+        let mut failed  = 0usize;
 
         for entry in fs::read_dir(video_dir.path())? {
             let entry = entry?;
             let path = entry.path();
-
             if path.extension().and_then(|e| e.to_str()) != Some("bin") { continue; }
-            
-            // derive timestamp from filename: frame_0001 -> index 1 -> 1 * 1.0s
+
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            let frame_index = stem
-                .trim_start_matches("frame_")
-                .parse::<f64>()
-                .unwrap_or(0.0);
+            let frame_index = stem.trim_start_matches("frame_").parse::<f64>().unwrap_or(0.0);
             let timestamp = frame_index - 1.0;
 
-            // read raw f32s
             let bytes = fs::read(&path)?;
             let vector: Vec<f32> = bytes
                 .chunks_exact(4)
@@ -365,6 +332,7 @@ async fn ingest_visual(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
 
             if vector.len() != VECTOR_SIZE as usize {
                 warn!("Skipping {:?}: expected {} floats, got {}", path, VECTOR_SIZE, vector.len());
+                failed += 1;
                 continue;
             }
 
@@ -381,8 +349,36 @@ async fn ingest_visual(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
                 },
             };
 
-            upsert_embedding(&state.qdrant, req).await?;
+            match upsert_embedding(&state.qdrant, req).await {
+                Ok(_) => {
+                    // delete .bin file immediately after upserting
+                    if let Err(e) = fs::remove_file(&path) {
+                        warn!("Could not delete bin file {:?}: {}", path, e);
+                    }
+                    upserted += 1;
+                }
+                Err(e) => {
+                    error!("Failed to upsert {:?}: {}", path, e);
+                    failed += 1;
+                }
+            }
         }
+
+        info!("Visual ingest for {}: {} upserted, {} failed", video_id, upserted, failed);
+
+        // delete the empty embeddings directory
+        if failed == 0 {
+            if let Err(e) = fs::remove_dir_all(video_dir.path()) {
+                warn!("Could not remove embeddings dir for {}: {}", video_id, e);
+            } else {
+                info!("Deleted embeddings dir for {}", video_id);
+            }
+        }
+    }
+
+    // if embeddings root is now empty, remove it too
+    if embed_root.read_dir().map(|mut d| d.next().is_none()).unwrap_or(false) {
+        let _ = fs::remove_dir(&embed_root);
     }
 
     Ok(())
@@ -392,14 +388,12 @@ async fn ingest_audio(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
     let transcripts_path = std::path::Path::new(output_dir).join("transcripts.json");
 
     if !transcripts_path.exists() {
-        warn!("No transcripts.json found at {:?}, skipping audio ingest", transcripts_path);
+        warn!("No transcripts.json found, skipping audio ingest");
         return Ok(());
     }
 
     let content = fs::read_to_string(&transcripts_path)?;
-
     let segments: Vec<serde_json::Value> = serde_json::from_str(&content)?;
-
     info!("Ingesting {} transcript segments", segments.len());
 
     let mut skip_videos: HashSet<String> = HashSet::new();
@@ -414,10 +408,14 @@ async fn ingest_audio(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
         }
     }
 
+    // track which segments were successfully indexed so we can remove them
+    let mut remaining: Vec<serde_json::Value> = Vec::new();
+
     for seg in segments {
         let video_id = seg["video_id"].as_str().unwrap_or("unknown").to_string();
 
         if skip_videos.contains(&video_id) {
+            // already indexed
             continue;
         }
 
@@ -426,7 +424,6 @@ async fn ingest_audio(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
         let text = seg["text"].as_str().unwrap_or("").to_string();
         let start_time = seg["start_time"].as_f64().unwrap_or(0.0);
         let end_time = seg["end_time"].as_f64().unwrap_or(0.0);
-
 
         if text.is_empty() {
             warn!("Skipping empty segment {}", segment_id);
@@ -439,7 +436,7 @@ async fn ingest_audio(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
             id: Uuid::new_v4().to_string(),
             vector,
             metadata: EmbeddingMetadata {
-                video_id,
+                video_id: video_id.clone(),
                 video_name,
                 start_time,
                 end_time,
@@ -448,28 +445,49 @@ async fn ingest_audio(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
             },
         };
 
-        upsert_embedding(&state.qdrant, req).await?;
+        match upsert_embedding(&state.qdrant, req).await {
+            Ok(_) => {
+                // successfully indexed
+            }
+            Err(e) => {
+                error!("Failed to index segment {}: {}", segment_id, e);
+                // keep in remaining so it can be retried next time
+                remaining.push(seg);
+            }
+        }
+    }
+
+    // write back only segments that failed (partial failure recovery)
+    // if everything succeeded, delete the file entirely
+    if remaining.is_empty() {
+        if let Err(e) = fs::remove_file(&transcripts_path) {
+            warn!("Could not delete transcripts.json: {}", e);
+        } else {
+            info!("Deleted transcripts.json — all segments indexed");
+        }
+    } else {
+        warn!("{} segments failed to index, keeping transcripts.json for retry", remaining.len());
+        if let Ok(json) = serde_json::to_string_pretty(&remaining) {
+            let _ = fs::write(&transcripts_path, json);
+        }
     }
 
     Ok(())
 }
 
 async fn is_video_indexed(client: &Qdrant, collection: &str, video_id: &str) -> bool {
-    let filter = Filter::must([
-        Condition::matches("video_id", video_id.to_string())
-    ]);
-
+    let filter = Filter::must([Condition::matches("video_id", video_id.to_string())]);
     let count = client.count(
-        CountPointsBuilder::new(collection)
-            .filter(filter)
+        CountPointsBuilder::new(collection).filter(filter)
     ).await;
-
-    matches!(count, Ok(r)if r.result.unwrap_or_default().count > 0)
+    matches!(count, Ok(r) if r.result.unwrap_or_default().count > 0)
 }
 
-pub async fn check_and_trigger_pipeline(state: &Arc<AppState>, pipeline_running: Arc<AtomicBool>) -> Result<bool> {
+pub async fn check_and_trigger_pipeline(
+    state: &Arc<AppState>,
+    pipeline_running: Arc<AtomicBool>,
+) -> Result<bool> {
     let videos_dir = "/videos";
-
     let entries = match fs::read_dir(videos_dir) {
         Ok(e) => e,
         Err(_) => return Ok(false),
@@ -493,24 +511,27 @@ pub async fn check_and_trigger_pipeline(state: &Arc<AppState>, pipeline_running:
             .unwrap_or("")
             .to_string();
 
-        let in_audio = is_video_indexed(&state.qdrant, AUDIO_COLLECTION, &stem).await;
-        let in_visual= is_video_indexed(&state.qdrant, VISUAL_COLLECTION, &stem).await;
+        let in_audio  = is_video_indexed(&state.qdrant, AUDIO_COLLECTION, &stem).await;
+        let in_visual = is_video_indexed(&state.qdrant, VISUAL_COLLECTION, &stem).await;
 
         if !in_audio || !in_visual {
-            info!("New video detected: {} - triggering ingestion pipeline", name);
-
+            info!("New video detected: {} - triggering pipeline", name);
             pipeline_running.store(true, Ordering::SeqCst);
 
-            let flag = Arc::clone(&pipeline_running);
+            let flag        = Arc::clone(&pipeline_running);
             let state_spawn = Arc::clone(state);
 
             tokio::spawn(async move {
-                trigger_pipeline().await;
+                let (ingest_time, embed_time, total_time) = trigger_pipeline().await;
                 if let Err(e) = ingest_from_disk(&state_spawn).await {
-                    warn!("Post-pipeline ingest faield: {}", e);
+                    warn!("Post-pipeline ingest failed: {}", e);
                 }
                 flag.store(false, Ordering::SeqCst);
                 info!("Pipeline complete, flag cleared");
+                info!(
+                    "Pipeline timings - ingest: {:.2?} | embed: {:.2?} | total: {:.2?}",
+                    ingest_time, embed_time, total_time
+                );
             });
             return Ok(true);
         }
@@ -518,85 +539,66 @@ pub async fn check_and_trigger_pipeline(state: &Arc<AppState>, pipeline_running:
     Ok(false)
 }
 
-async fn trigger_pipeline() {
+async fn trigger_pipeline() -> (Duration, Duration, Duration) {
     use tokio::fs;
-
     let total_start = Instant::now();
 
-    // trigger ingestion
     info!("Triggering ingestion...");
     let ingest_start = Instant::now();
     if let Err(e) = fs::write("/output/.trigger_ingest", b"1").await {
         warn!("Failed to write ingest trigger: {}", e);
-        return;
+        return (Duration::ZERO, Duration::ZERO, Duration::ZERO);
     }
-
-    // wait for ingestion to finish (it deletes the file when done)
     loop {
         sleep(Duration::from_secs(5)).await;
         match fs::metadata("/output/.trigger_ingest").await {
-            Err(_) => break, // file gone = ingestion done
-            Ok(_) => info!("Waiting for ingestion to complete..."),
+            Err(_) => break,
+            Ok(_)  => info!("Waiting for ingestion to complete..."),
         }
     }
-    info!("Ingestion complete in {:.2?}", ingest_start.elapsed());
+    let ingest_elapsed = ingest_start.elapsed();
 
-    // trigger embedding
     info!("Triggering embedding...");
     let embed_start = Instant::now();
     if let Err(e) = fs::write("/output/.trigger_embed", b"1").await {
         warn!("Failed to write embed trigger: {}", e);
-        return;
+        return (ingest_elapsed, Duration::ZERO, total_start.elapsed());
     }
-
     loop {
         sleep(Duration::from_secs(5)).await;
         match fs::metadata("/output/.trigger_embed").await {
-            Err(_) => break, // file gone = embedding done
-            Ok(_) => info!("Waiting for embedding to complete..."),
+            Err(_) => break,
+            Ok(_)  => info!("Waiting for embedding to complete..."),
         }
     }
-    info!("Embedding complete in {:.2?}", embed_start.elapsed());
-    info!("Full pipeline finished in {:.2?}", total_start.elapsed());
+    let embed_elapsed = embed_start.elapsed();
+
+    (ingest_elapsed, embed_elapsed, total_start.elapsed())
 }
 
 pub async fn list_indexed_videos(state: &Arc<AppState>) -> Result<Vec<VideoInfo>> {
     let mut map: HashMap<String, VideoInfo> = HashMap::new();
 
-    // scroll audio collection
     let audio = state.qdrant.scroll(
-        ScrollPointsBuilder::new(AUDIO_COLLECTION)
-        .with_payload(true)
-        .limit(1000)
+        ScrollPointsBuilder::new(AUDIO_COLLECTION).with_payload(true).limit(1000)
     ).await?;
-
     for point in audio.result {
-        let video_id = get_str(&point.payload, "video_id");
+        let video_id   = get_str(&point.payload, "video_id");
         let video_name = get_str(&point.payload, "video_name");
         let entry = map.entry(video_id.clone()).or_insert(VideoInfo {
-            video_id,
-            video_name,
-            audio_segments: 0,
-            visual_frames: 0,
+            video_id, video_name, audio_segments: 0, visual_frames: 0,
         });
         entry.audio_segments += 1;
     }
 
-    // scroll visual collection
     let visual = state.qdrant.scroll(
-        ScrollPointsBuilder::new(VISUAL_COLLECTION)
-            .with_payload(true)
-            .limit(10000)
+        ScrollPointsBuilder::new(VISUAL_COLLECTION).with_payload(true).limit(10000)
     ).await?;
-
     for point in visual.result {
-        let video_id = get_str(&point.payload, "video_id");
+        let video_id   = get_str(&point.payload, "video_id");
         let video_name = get_str(&point.payload, "video_name");
         let entry = map.entry(video_id.clone()).or_insert(VideoInfo {
-            video_id,
-            video_name,
-            audio_segments: 0,
-            visual_frames: 0,
+            video_id, video_name, audio_segments: 0, visual_frames: 0,
         });
         entry.visual_frames += 1;
     }
@@ -605,8 +607,6 @@ pub async fn list_indexed_videos(state: &Arc<AppState>) -> Result<Vec<VideoInfo>
     videos.sort_by(|a, b| a.video_name.cmp(&b.video_name));
     Ok(videos)
 }
-
-// Helpers
 
 fn string_val(s: &str) -> Value {
     Value { kind: Some(Kind::StringValue(s.to_string())) }
