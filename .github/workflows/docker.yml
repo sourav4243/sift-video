@@ -24,7 +24,7 @@ jobs:
           - service: ingestion
             image: sift-video-ingestion
             tag: latest
-            scope: ingestion-cpu
+            scope: cpp-services-cpu
 
           - service: ingestion
             image: sift-video-ingestion
@@ -38,7 +38,7 @@ jobs:
           - service: embedding
             image: sift-video-embedding
             tag: latest
-            scope: embedding-cpu
+            scope: cpp-services-cpu
 
           - service: embedding
             image: sift-video-embedding
@@ -51,13 +51,13 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
       - name: Get changed files
         id: changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             query_engine:
@@ -69,24 +69,32 @@ jobs:
 
       - name: Login to Docker Hub
         if: steps.changes.outputs[matrix.service] == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         if: steps.changes.outputs[matrix.service] == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Extract git metadata
         if: steps.changes.outputs[matrix.service] == 'true'
         id: meta
         run: |
           echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+      
+      - name: Delete old caches for this scope
+        if: steps.changes.utputs[matrix.service] == 'true'
+        env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh cache list --repo ${{ github.repository }} --key ${{ matrix.scope }} \
+            --json id -q '.[].id' | xargs -I{} gh cache delete {} --repo ${{ github.repository }} || true
 
       - name: Build and push ${{ matrix.image }}:${{ matrix.tag }}
         if: steps.changes.outputs[matrix.service] == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./services/${{ matrix.service }}
           file: ./services/${{ matrix.service }}/Dockerfile
@@ -95,15 +103,16 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ matrix.tag }}
             ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ matrix.tag }}-${{ steps.meta.outputs.sha_short }}
           build-args: ${{ matrix.build-args }}
-          cache-from: type=gha,scope=${{ matrix.scope }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.scope }}
+          # no gha cache for gpu builds as cuda layers are too large
+          cache-from: ${{ contains(matrix.tag, 'gpu') && '' || format('type=gha,scope={0}', matrix.scope) }}
+          cache-to: ${{ contains(matrix.tag, 'gpu') && 'type=inline' || format('type=gha,mode=min,scope={0}', matrix.scope) }}
 
   verify:
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
       - name: Login to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
