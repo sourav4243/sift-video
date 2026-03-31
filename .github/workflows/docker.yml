@@ -85,9 +85,9 @@ jobs:
           echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
       
       - name: Delete old caches for this scope
-        if: steps.changes.utputs[matrix.service] == 'true'
+        if: steps.changes.outputs[matrix.service] == 'true'
         env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh cache list --repo ${{ github.repository }} --key ${{ matrix.scope }} \
             --json id -q '.[].id' | xargs -I{} gh cache delete {} --repo ${{ github.repository }} || true
