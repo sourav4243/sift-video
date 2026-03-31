@@ -22,3 +22,5 @@ open_clip_inference = { version = "0.3.0" }
 uuid = { version = "1.22.0", features = ["v4"] }
 tower-http = { version = "0.6.8", features = ["fs"] }
 tokio-util = { version = "0.7.18", features = ["io"] }
+futures = "0.3.32"
+async-stream = "0.3.6"

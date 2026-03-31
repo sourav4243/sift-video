@@ -1,6 +1,6 @@
 FROM rust:1-slim-bookworm AS rust-base
 
-FROM debian:trixie-slim AS builder
+FROM ubuntu:24.04 AS builder
 WORKDIR /app
 
 COPY --from=rust-base /usr/local/cargo /usr/local/cargo
@@ -9,6 +9,7 @@ COPY --from=rust-base /usr/local/rustup /usr/local/rustup
 ENV PATH="/usr/local/cargo/bin:${PATH}"
 ENV RUSTUP_HOME="/usr/local/rustup"
 ENV CARGO_HOME="/usr/local/cargo"
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

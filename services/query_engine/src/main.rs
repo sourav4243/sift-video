@@ -72,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/search", post(api::search_handler))
         .route("/index", post(api::index_handler))
         .route("/upload", post(api::upload_handler))
-        .route("/download", post(api::download_handler))
+        .route("/download/progress", post(api::download_progress_handler))
         .route("/health", get(api::health_handler))
         .route("/videos/list", get(api::video_list_handler))
         .route(

@@ -8,6 +8,7 @@ on:
       - 'docker-compose.yml'
       - '.github/workflows/**'
       - 'ui/**'
+  workflow_dispatch:
 
 jobs:
   build-and-push:
@@ -93,7 +94,7 @@ jobs:
             --json id -q '.[].id' | xargs -I{} gh cache delete {} --repo ${{ github.repository }} || true
 
       - name: Build and push ${{ matrix.image }}:${{ matrix.tag }}
-        if: steps.changes.outputs[matrix.service] == 'true'
+        if: steps.changes.outputs[matrix.service] == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v7
         with:
           context: ./services/${{ matrix.service }}

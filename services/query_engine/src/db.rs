@@ -463,7 +463,7 @@ async fn ingest_audio(state: &Arc<AppState>, output_dir: &str) -> Result<()> {
         if let Err(e) = fs::remove_file(&transcripts_path) {
             warn!("Could not delete transcripts.json: {}", e);
         } else {
-            info!("Deleted transcripts.json — all segments indexed");
+            info!("Deleted transcripts.json - all segments indexed");
         }
     } else {
         warn!("{} segments failed to index, keeping transcripts.json for retry", remaining.len());

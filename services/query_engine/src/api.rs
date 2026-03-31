@@ -1,6 +1,7 @@
-use std::sync::Arc;
-use axum::{Json, extract::{Path, State}, http::{HeaderMap, StatusCode, header}, response::{IntoResponse, Response}};
-use tokio::{fs::File, io::AsyncReadExt};
+use std::{convert::Infallible, sync::Arc};
+use axum::{Json, extract::{Path, State}, http::{HeaderMap, StatusCode, header}, response::{IntoResponse, Response, Sse, sse::Event}};
+use futures::Stream;
+use tokio::{fs::File, io::{AsyncReadExt, BufReader, AsyncBufReadExt}};
 use tokio_util::io::ReaderStream;
 use tracing::{info, error, debug};
 
@@ -12,79 +13,162 @@ pub struct DownloadRequest {
     pub url: String,
 }
 
-pub async fn download_handler(
+pub async fn download_progress_handler(
+    State(state): State<Arc<AppState>>,
     Json(payload): Json<DownloadRequest>,
-) -> Response {
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let url = payload.url.trim().to_string();
+    let flag = Arc::clone(&state.pipeline_running);
 
-    if url.is_empty() {
-        return (StatusCode::BAD_REQUEST, "url is required").into_response();
-    }
+    let stream = async_stream::stream! {
+        // fetch metadata
+        yield Ok(Event::default().data("{\"stage\":\"meta\",\"msg\":\"Fetching info...\"}"));
 
-    info!("yt-dlp download requested: {}", url);
+        let meta = tokio::process::Command::new("yt-dlp")
+            .args([
+                "--no-playlist",
+                "--js-runtimes", "node",
+                "--extractor-args", "youtube:player_client=android",
+                "--dump-json",
+                &url
+            ])
+            .output().await;
 
-    let meta_output = match tokio::process::Command::new("yt-dlp")
-        .args(["--no-playlist", "--dump-json", &url])
-        .output()
-        .await
-    {
-        Ok(o) => o,
-        Err(e) => {
-            error!("Failed to fetch metadata: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "metadata fetch failed").into_response();
+        let (title, duration, thumbnail) = match meta {
+            Ok(o) if o.status.success() => {
+                let json: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_default();
+                (
+                    json["title"].as_str().unwrap_or("unknown").to_string(),
+                    json["duration"].as_f64().unwrap_or(0.0),
+                    json["thumbnail"].as_str().unwrap_or("").to_string(),
+                )
+            }
+            Ok(o) => {
+                // yt-dlp ran, but returned a non-zero exit code (e.g., bad URL, blocked)
+                let err_msg = String::from_utf8_lossy(&o.stderr);
+                error!("yt-dlp failed to fetch metadata. Status: {}. Stderr: {}", o.status, err_msg);
+                yield Ok(Event::default().data("{\"stage\":\"error\",\"msg\":\"Metadata fetch failed\"}"));
+                return;
+            }
+            Err(e) => {
+                // yt-dlp failed to execute entirely (e.g., not installed, not in PATH)
+                error!("Failed to execute yt-dlp command: {}", e);
+                yield Ok(Event::default().data("{\"stage\":\"error\",\"msg\":\"Metadata fetch failed\"}"));
+                return;
+            }
+        };
+
+        yield Ok(Event::default().data(
+            serde_json::json!({"stage":"meta_done", "title":title, "duration":duration, "thumbnail": thumbnail})
+                .to_string()
+        ));
+
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let mut child = match tokio::process::Command::new("yt-dlp")
+            .args([
+                "--no-playlist",
+                "--newline",
+                "--js-runtimes", "node",
+                "--extractor-args", "youtube:player_client=android",
+                "-o", "/videos/%(title)s.%(ext)s",
+                "--remux-video", "mp4",
+                &url,
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                yield Ok(Event::default().data(
+                    format!("{{\"stage\":\"error\",\"msg\":\"{}\"}}", e)
+                ));
+                return;
+            }
+        };
+
+        if let Some(stdout) = child.stdout.take() {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                info!("[yt-dlp] {}", line);
+                if line.contains("[download]") {
+                    let pct = line.split_whitespace()
+                        .find(|s| s.ends_with('%'))
+                        .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok());
+
+                    let payload = match pct {
+                        Some(p) => serde_json::json!({"stage":"downloading","pct":p,"msg":line}),
+                        None => serde_json::json!({"stage":"downloading","msg":line}),
+                    };
+                    yield Ok(Event::default().data(payload.to_string()));
+                }
+            }
+        }
+
+        if let Some(stderr) = child.stderr.take() {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.is_empty() {
+                    error!("[yt-dlp stderr] {}", line);
+                }
+            }
+        }
+
+        match child.wait().await {
+            Ok(s) if s.success() => {
+                yield Ok(Event::default().data("{\"stage\":\"download_done\",\"pct\":100}"));
+                flag.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+            _ => {
+                flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                yield Ok(Event::default().data("{\"stage\":\"error\",\"msg\":\"Download failed\"}"));
+                return;
+            }
+        }
+
+        yield Ok(Event::default().data("{\"stage\":\"indexing\",\"msg\":\"Indexing…\"}"));
+
+        let title_clone = title.clone();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+            let indexed = crate::db::list_indexed_videos(&state).await
+                .ok()
+                .and_then(|vids| vids.into_iter().find(|v| {
+                    let stem = std::path::Path::new(&v.video_name)
+                        .file_stem().and_then(|s| s.to_str())
+                        .unwrap_or("");
+                    stem == title_clone || v.video_name.contains(&title_clone)
+                }));
+
+            match indexed {
+                Some(v) if v.audio_segments > 0 && v.visual_frames > 0 => {
+                    yield Ok(Event::default().data(
+                        serde_json::json!({"stage":"done","audio":v.audio_segments,"visual":v.visual_frames})
+                            .to_string()
+                    ));
+                    flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                    break;
+                }
+                Some(v) => {
+                    yield Ok(Event::default().data(
+                        serde_json::json!({"stage":"indexing","audio":v.audio_segments,"visual":v.visual_frames})
+                            .to_string()
+                    ));
+                }
+                None => {
+                    yield Ok(Event::default().data("{\"stage\":\"indexing\",\"msg\":\"Waiting for pipeline…\"}"));
+                }
+            }
         }
     };
 
-    if !meta_output.status.success() {
-        let err = String::from_utf8_lossy(&meta_output.stderr);
-        return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
-    }
-
-    // parse JSON
-    let json: serde_json::Value = match serde_json::from_slice(&meta_output.stdout) {
-        Ok(j) => j,
-        Err(e) => {
-            error!("JSON parse failed: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "invalid metadata").into_response();
-        }
-    };
-
-    let title = json["title"].as_str().unwrap_or("unknown").to_string();
-    let duration = json["duration"].as_f64().unwrap_or(0.0);
-    let thumbnail = json["thumbnail"].as_str().unwrap_or("").to_string();
-
-    // await download
-    let download = tokio::process::Command::new("yt-dlp")
-        .args([
-            "--no-playlist",
-            "-o", "/videos/%(title)s.%(ext)s",
-            "--remux-video", "mp4",
-            &url,
-        ])
-        .output()
-        .await;
-
-    match download {
-        Err(e) => {
-            error!("yt-dlp failed to run: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "yt-dlp failed").into_response();
-        }
-        Ok(out) if !out.status.success() => {
-            let err = String::from_utf8_lossy(&out.stderr);
-            error!("yt-dlp exited with error: {}", err);
-            return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
-        }
-        _ => {}
-    }
-
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "title": title,
-            "duration": duration,
-            "thumbnail": thumbnail
-        }))
-    ).into_response()
+    Sse::new(stream).keep_alive(
+        axum::response::sse::KeepAlive::new()
+            .interval(std::time::Duration::from_secs(15))
+    )
 }
 
 pub async fn delete_video_handler(
