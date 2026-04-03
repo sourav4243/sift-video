@@ -2,130 +2,268 @@
 
 ## Semantic Indexing for Timelines in Video
 
-SIFT-Video is a multimodal semantic video search engine that enables natural-language search inside videos and returns the most relevant timestamps based on audio and visual content.
+SIFT-Video is a multimodal semantic video search engine that lets you search inside videos using natural language and returns the most relevant timestamps based on audio **and** visual content.
 
-The system processes videos offline, converts audio and visual information into semantic embeddings using pre-trained inference models, and indexes them in a vector database for similarity search at query time.
+Videos are processed offline, audio and frames are converted into semantic embeddings using pre-trained ONNX models, and indexed in a Qdrant vector database for fast similarity search at query time.
 
-### Quick Start
+---
 
-> WIP
+## Web UI
 
-Clone the repository and run the setup script:
+The project ships with a full web interface served directly by the query engine at `http://localhost:8080`.
 
-```bash
-git clone https://github.com/sourav4243/sift-video.git
-cd sift-video
+**Search panel** - the default view. Type a natural language query and hit Enter or click Search. Results appear as cards showing the video name, timestamp, match type badge (`audio`, `visual`, or `audio+visual`), the matching transcript excerpt with keyword highlighting, and a relevance score bar. Click any card or its **jump** button to open the built-in video player at that exact moment. Search history is persisted in localStorage and shown as clickable chips.
 
-chmod +x setup.sh
-./setup.sh
+**Library panel** - lists every indexed video with its audio segment and visual frame counts. Click a video to scope all subsequent searches to that video only (shown as a dismissible filter pill). Click the trash icon to delete a video and remove all its embeddings from Qdrant.
+
+**Upload panel** - two ways to add videos:
+- **URL download** - paste any yt-dlp-compatible URL and click Download. A live progress bar streams SSE events from the server through download → transcription → embedding → indexing, showing percentage, video title, thumbnail, and duration. The entry clears itself automatically once indexing completes.
+- **File upload** - drag and drop or browse for local video files (mp4, webm, mkv, mov, avi, ogv, up to 1 GB). Indexing begins automatically within ~30 seconds.
+
+**Video player** - the theatre layout activates when you jump to a result. The left panel shows the video with custom controls: play/pause (also `Space` / `k`), a seek bar with click-and-drag support, timestamp display, mute toggle (`m`), fullscreen (`f`), and ±5 s skip with arrow keys. Clicking the logo resets back to the idle home view.
+
+**Match type filter** - a three-way toggle (`All Matches` / `Audio` / `Visual`) re-runs the search automatically on change when a query is active.
+
+---
+
+## Architecture
+
+Four Docker services communicate through a shared `/output` volume and a trigger-file protocol orchestrated by the query engine:
+
+| Service | Language | Role |
+| :--- | :--- | :--- |
+| `sift_ingestion` | C++ / whisper.cpp | Extracts audio and frames with FFmpeg, transcribes speech with Whisper, writes `transcripts.json` |
+| `sift_embedding` | C++ / ONNX Runtime | Reads frame JPEGs, runs MobileCLIP vision encoder, writes `.bin` embedding files |
+| `sift_query_engine` | Rust / Axum | Orchestrates the pipeline, serves the REST API and web UI, ingests embeddings into Qdrant |
+| `sift_qdrant` | Qdrant | Vector database storing `audio_segments` and `visual_frames` collections |
+
+### Search pipeline
+
+1. User submits a natural-language query via the UI or API.
+2. The query engine lazy-loads a **MobileCLIP2-S3-OpenCLIP** text embedder (evicted after 120 s idle).
+3. The 768-dimensional query vector is searched in parallel against both Qdrant collections.
+4. Audio hits are weighted at **0.3**, visual hits at **0.7**.
+5. Results within a **2-second window** of each other in the same video are merged into a single `audio+visual` result.
+6. The top results (with timestamps) are returned.
+
+### Ingestion pipeline (triggered automatically)
+
+```
+new video in /videos
+      │
+      ▼
+sift_query_engine detects it (30s poll)
+      │
+      ▼
+writes /output/.trigger_ingest
+      │
+      ▼
+sift_ingestion: FFmpeg extracts audio + frames in parallel
+              → Whisper transcribes audio → transcripts.json
+              → frame_XXXX.jpg files
+      │
+      ▼
+writes /output/.trigger_embed
+      │
+      ▼
+sift_embedding: MobileCLIP encodes each frame → .bin files
+      │
+      ▼
+sift_query_engine: reads transcripts.json + .bin files → upserts into Qdrant
 ```
 
-### Installation (Manual Setup)
+---
 
-**Prerequisites**
+## Quick Start
 
-- [docker](https://docs.docker.com/get-docker/) and docker-compose
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) and Docker Compose
 - git
-- curl
 
-**1. Clone the repository and setup environment**
+### 1. Clone
 
-Use `--recurse-submodules` for external dependencies (ingestion service depends on `whisper.cpp`) 
-
-```bash 
+```bash
 git clone --recurse-submodules https://github.com/sourav4243/sift-video.git
 cd sift-video
 mkdir -p videos output
 ```
 
-> Note: If you cloned without submodules, you can fix it by running:
+> If you cloned without `--recurse-submodules`:
+> ```bash
+> git submodule update --init --recursive
+> ```
+
+### 2. Run (CPU)
 
 ```bash
-git submodule update --init --recursive
+docker compose pull
+docker compose up -d
 ```
 
-**2. Download Whisper model**
+Open `http://localhost:8080` in your browser.
 
-Download the model for the ingestion service to work (`ggml-small.en.bin`):
+### 3. Run (NVIDIA GPU)
+
+Requires [`nvidia-container-toolkit`](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) on the host.
 
 ```bash
-mkdir -p services/ingestion/external/whisper/models
-
-curl -L -o services/ingestion/external/whisper/models/ggml-small.en.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
+docker compose -f docker-compose.gpu.yml pull
+docker compose -f docker-compose.gpu.yml up -d
 ```
 
-#### Configuration
+GPU builds use separate `:latest-gpu` image tags and offload:
+- **Whisper** transcription via `GGML_CUDA`
+- **MobileCLIP** inference via the ONNX Runtime CUDA Execution Provider
 
-> The following environment variables can be changed in `docker-compose.yml`
+### 4. Index a video
 
-| Variable | Default | Description |
-| :--- | :--- | :--- |
-| `QDRANT_URL` | `http://localhost:6334` | URL of the Qdrant gRPC interface. Use `http://qdrant:6334` inside Docker. |
-| `RUST_LOG` | `info` | Logging level. |
+**Option A - web UI:** open `http://localhost:8080`, go to the **upload** tab, and either paste a URL or drag in a file.
+
+**Option B - drop a file:**
+```bash
+cp your-video.mp4 videos/
+```
+The query engine detects it within 30 seconds and triggers the pipeline automatically.
+
+**Option C - API download:**
+```bash
+curl -X POST http://localhost:8080/download/progress \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://youtube.com/watch?v=..."}'
+```
+
+### 5. Search
+
+**Via the UI:** type in the search bar and press Enter.
+
+**Via the API:**
+```bash
+curl -X POST http://localhost:8080/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "what is the meaning of life"}'
+```
+
+**Response:**
+```json
+{
+  "results": [
+    {
+      "video_id": "myvideo",
+      "video_name": "myvideo.mp4",
+      "timestamp": 142.5,
+      "score": 0.89,
+      "match_type": "audio+visual",
+      "match_context": "The meaning of life is..."
+    }
+  ]
+}
+```
 
 ---
 
-> Note: You can access Qdrant web dashboard at http://localhost:6333/dashboard
+## API Reference
 
-### Usage
+### `POST /search`
 
-1. **Prepare your videos:**
-Place the video files you want to index into the videos/ directory at project root.
+Multimodal vector search.
 
-2. **Start the services:**
-Run the following command to build and start the indexing pipeline and search API:
-
-```bash
-docker-compose up --build
+```json
+{
+  "query": "iron man flying",
+  "video_id": null,
+  "match_type": "all"
+}
 ```
 
-This spins up three containers:
+`match_type` can be `"all"`, `"audio"`, or `"visual"`.
 
-- `sift_qdrant`: The vector database (Ports: 6333, 6334).
-- `sift_ingestion`: Processes videos from the `videos/` folder and saves transcripts to `output/`.
-- `sift_query_engine`: The search API (Port: 8080).
+### `POST /download/progress`
 
-3. **Search via API:**
-Once the system is running, you can search your indexed videos using HTTP API:
+Download a video via yt-dlp. Returns an **SSE stream** of progress events (`meta`, `meta_done`, `downloading`, `download_done`, `indexing`, `done`, `error`).
 
-```bash
-curl -X POST http://localhost:8080/search \
-    -H "Content-Type: application/json" \
-    -d '{"query": "what is the meaning of life"}'
+```json
+{ "url": "https://youtube.com/watch?v=..." }
 ```
 
-> Note: A dedicated CLI tool for easier searching is planned.
+### `POST /upload`
 
-### Planned Features
+Multipart file upload (mp4, webm, mkv, mov, avi, ogv). Max 1 GB.
 
-- [ ] Offline video ingestion and indexing pipeline
-- [ ] Audio extraction from video files
-- [ ] Speech-to-text transcription with timestamps
-- [ ] Periodic video frame extraction
-- [ ] Text and image embedding generation
-- [ ] Multimodal semantic search (audio + visual)
-- [ ] Timestamp resolution and retrieval
-- [ ] Fully containerized services
-- [ ] CLI tool for natural language search
+### `GET /videos/list`
 
-### Technology Stack
+List all indexed videos with audio segment and visual frame counts.
 
-#### Languages
+### `GET /videos/:filename`
 
-- C++ - multimedia processing and model inference
-- Rust - query engine, API layer, and vector database interaction
+Stream a video file with HTTP range request support for seeking.
 
-#### Models
+### `DELETE /videos/:filename`
 
-- Whisper (whisper.cpp) - speech-to-text with timestamps
-- CLIP (via ONNX Runtime) - text and image embeddings
+Remove a video from disk and delete all associated embeddings from Qdrant.
 
-#### Infrastructure & Tooling
+### `GET /health`
 
-- FFmpeg
-- Vector database (Qdrant)
-- Docker
+```json
+{ "status": "ok", "qdrant": true, "pipeline_running": false }
+```
+
+---
+
+## Configuration
+
+Set in `docker-compose.yml` (or `docker-compose.gpu.yml`):
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `QDRANT_URL` | `http://qdrant:6334` | Qdrant gRPC endpoint |
+| `RUST_LOG` | `info` | Log level for the query engine |
+| `OUTPUT_DIR` | `/output` | Shared volume path |
+| `WHISPER_THREADS` | `4` | Whisper CPU thread count (ingestion service) |
+
+> The Qdrant web dashboard is available at `http://localhost:6333/dashboard`.
+
+---
+
+## Technology Stack
+
+### Languages
+- **C++17** - ingestion and embedding services (whisper.cpp, ONNX Runtime, OpenCV, FFmpeg)
+- **Rust** - query engine, REST API, vector DB interaction (Axum, qdrant-client, open_clip_inference)
+- **HTML / CSS / JS** - web UI (vanilla, no framework)
+
+### Models
+- **Whisper small.en** (via whisper.cpp) - speech-to-text with timestamps
+- **MobileCLIP2-S3-OpenCLIP** (via ONNX Runtime) - text and image embeddings (768-dim)
+
+### Infrastructure
+- **FFmpeg** - audio extraction and frame extraction (1 fps, parallelised)
+- **Qdrant** - vector database (`audio_segments` + `visual_frames` collections, cosine distance)
+- **Docker** / Docker Compose - multi-service orchestration
+
+---
+
+## Building from Source
+
+Images are built and pushed to Docker Hub via GitHub Actions on every push to `main` that touches a service directory. You can also build locally:
+
+```bash
+# CPU images
+docker compose build
+
+# GPU images
+docker compose -f docker-compose.gpu.yml build
+```
+
+GitHub Actions builds four image variants automatically:
+
+| Image | Tag | Notes |
+| :--- | :--- | :--- |
+| `meledo/sift-video-query-engine` | `latest` | Rust, CPU only |
+| `meledo/sift-video-ingestion` | `latest` | C++, CPU whisper |
+| `meledo/sift-video-ingestion` | `latest-gpu` | C++, CUDA whisper (`GGML_CUDA=ON`) |
+| `meledo/sift-video-embedding` | `latest` | C++, CPU ONNX Runtime |
+| `meledo/sift-video-embedding` | `latest-gpu` | C++, ONNX Runtime + CUDA EP |
 
 ---
 
@@ -135,4 +273,4 @@ Suggestions, fixes and improvements are welcome. Feel free to open an issue or a
 
 ## License
 
-This project is licensed under [GNU GPLv3](LICENSE)
+This project is licensed under [GNU GPLv3](LICENSE).
