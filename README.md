@@ -6,6 +6,87 @@ SIFT-Video is a multimodal semantic video search engine that lets you search ins
 
 Videos are processed offline, audio and frames are converted into semantic embeddings using pre-trained ONNX models, and indexed in a Qdrant vector database for fast similarity search at query time.
 
+<p>
+  <img src="https://img.shields.io/badge/c++-%2300599C.svg?style=flat&logo=c%2B%2B&logoColor=white" alt="C++" />
+  <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust" />
+  <img src="https://img.shields.io/badge/docker-%230db7ed.svg?style=flat&logo=docker&logoColor=white" alt="Docker" />
+  <img src="https://img.shields.io/badge/Qdrant-f90060.svg?style=flat&logo=qdrant&logoColor=white" alt="Qdrant" />
+  <img src="https://img.shields.io/badge/build-passing-brightgreen.svg?style=flat" alt="Builds Passing" />
+  <img src="https://img.shields.io/badge/license-GPLv3-blue.svg" alt="License: GPL v3" />
+</p>
+
+---
+
+## Preview
+Typing 'spiderman webslinging' as the query
+
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/c245aadc-b8a5-4f55-b867-004d06537e1d" width="100%" autoplay loop muted playsinline></video>
+</p>
+
+---
+
+<img align="right" width="40%" src="https://github.com/user-attachments/assets/5d97b320-6aa5-492f-bca3-a75638be7d8f" autoplay loop muted playsinline></video>
+
+### Live Video Ingestion
+Paste any yt-dlp-compatible URL and watch the pipeline stream SSE events live. The engine downloads, extracts frames, transcribes via Whisper, and embeds into Qdrant automatically. 
+
+<br clear="both"/>
+
+## Quick Start
+
+### Prerequisites
+
+- [Docker](https://docs.docker.com/get-docker/) and Docker Compose
+- git
+
+### 1. Clone
+
+```bash
+git clone --recurse-submodules https://github.com/sourav4243/sift-video.git
+cd sift-video
+mkdir -p videos output
+```
+
+> If you cloned without `--recurse-submodules`:
+> ```bash
+> git submodule update --init --recursive
+> ```
+
+### 2. Run
+
+#### For CPU
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Open `http://localhost:8080` in your browser.
+
+#### For NVIDIA GPU
+
+Requires [`nvidia-container-toolkit`](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) on the host.
+
+```bash
+docker compose -f docker-compose.gpu.yml pull
+docker compose -f docker-compose.gpu.yml up -d
+```
+
+GPU builds use separate `:latest-gpu` image tags and offload:
+- **Whisper** transcription via `GGML_CUDA`
+- **MobileCLIP** inference via the ONNX Runtime CUDA Execution Provider
+
+### 4. Index a video
+
+**Option A - web UI:** open `http://localhost:8080`, go to the **upload** tab, and either paste a URL or drag in a file.
+
+**Option B - drop a file:**
+```bash
+cp your-video.mp4 videos/
+```
+The query engine detects it within 30 seconds and triggers the pipeline automatically.
+
 ---
 
 ## Web UI
@@ -70,94 +151,6 @@ sift_embedding: MobileCLIP encodes each frame → .bin files
       │
       ▼
 sift_query_engine: reads transcripts.json + .bin files → upserts into Qdrant
-```
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- [Docker](https://docs.docker.com/get-docker/) and Docker Compose
-- git
-
-### 1. Clone
-
-```bash
-git clone --recurse-submodules https://github.com/sourav4243/sift-video.git
-cd sift-video
-mkdir -p videos output
-```
-
-> If you cloned without `--recurse-submodules`:
-> ```bash
-> git submodule update --init --recursive
-> ```
-
-### 2. Run (CPU)
-
-```bash
-docker compose pull
-docker compose up -d
-```
-
-Open `http://localhost:8080` in your browser.
-
-### 3. Run (NVIDIA GPU)
-
-Requires [`nvidia-container-toolkit`](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) on the host.
-
-```bash
-docker compose -f docker-compose.gpu.yml pull
-docker compose -f docker-compose.gpu.yml up -d
-```
-
-GPU builds use separate `:latest-gpu` image tags and offload:
-- **Whisper** transcription via `GGML_CUDA`
-- **MobileCLIP** inference via the ONNX Runtime CUDA Execution Provider
-
-### 4. Index a video
-
-**Option A - web UI:** open `http://localhost:8080`, go to the **upload** tab, and either paste a URL or drag in a file.
-
-**Option B - drop a file:**
-```bash
-cp your-video.mp4 videos/
-```
-The query engine detects it within 30 seconds and triggers the pipeline automatically.
-
-**Option C - API download:**
-```bash
-curl -X POST http://localhost:8080/download/progress \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://youtube.com/watch?v=..."}'
-```
-
-### 5. Search
-
-**Via the UI:** type in the search bar and press Enter.
-
-**Via the API:**
-```bash
-curl -X POST http://localhost:8080/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "what is the meaning of life"}'
-```
-
-**Response:**
-```json
-{
-  "results": [
-    {
-      "video_id": "myvideo",
-      "video_name": "myvideo.mp4",
-      "timestamp": 142.5,
-      "score": 0.89,
-      "match_type": "audio+visual",
-      "match_context": "The meaning of life is..."
-    }
-  ]
-}
 ```
 
 ---
@@ -239,7 +232,7 @@ Set in `docker-compose.yml` (or `docker-compose.gpu.yml`):
 ### Infrastructure
 - **FFmpeg** - audio extraction and frame extraction (1 fps, parallelised)
 - **Qdrant** - vector database (`audio_segments` + `visual_frames` collections, cosine distance)
-- **Docker** / Docker Compose - multi-service orchestration
+- **Docker** - multi-service orchestration
 
 ---
 
