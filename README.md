@@ -33,6 +33,8 @@ Paste any yt-dlp-compatible URL and watch the pipeline stream SSE events live. T
 
 <br clear="both"/>
 
+---
+
 ## Quick Start
 
 ### Prerequisites
