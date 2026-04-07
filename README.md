@@ -17,16 +17,13 @@ Videos are processed offline, audio and frames are converted into semantic embed
 
 ---
 
-## Preview
-Typing 'spiderman webslinging' as the query
-
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/c245aadc-b8a5-4f55-b867-004d06537e1d" width="100%" autoplay loop muted playsinline></video>
+  <img src="demo/search.gif" width="90%" autoplay loop muted playsinline/>
 </p>
 
 ---
 
-<img align="right" width="40%" src="https://github.com/user-attachments/assets/5d97b320-6aa5-492f-bca3-a75638be7d8f" autoplay loop muted playsinline></video>
+<img align="right" width="40%" src="demo/download.gif" autoplay loop muted playsinline/>
 
 ### Live Video Ingestion
 Paste any yt-dlp-compatible URL and watch the pipeline stream SSE events live. The engine downloads, extracts frames, transcribes via Whisper, and embeds into Qdrant automatically. 
